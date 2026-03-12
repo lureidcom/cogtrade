@@ -136,6 +136,24 @@ public class DatabaseManager {
                 );
             """;
 
+        // Audit log for completed direct player-to-player trades
+        String directTradesTable = """
+                CREATE TABLE IF NOT EXISTS direct_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    initiator_uuid TEXT NOT NULL,
+                    initiator_name TEXT NOT NULL,
+                    target_uuid TEXT NOT NULL,
+                    target_name TEXT NOT NULL,
+                    initiator_coins REAL NOT NULL DEFAULT 0,
+                    target_coins REAL NOT NULL DEFAULT 0,
+                    initiator_items INTEGER NOT NULL DEFAULT 0,
+                    target_items INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'COMPLETED',
+                    completed_at INTEGER NOT NULL
+                );
+            """;
+
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(playersTable);
             stmt.execute(transactionsTable);
@@ -145,6 +163,7 @@ public class DatabaseManager {
             stmt.execute(playerShopsTable);
             stmt.execute(playerShopListingsTable);
             stmt.execute(tradeDepotsTable);
+            stmt.execute(directTradesTable);
         }
 
         // Eski player_shops.chest_positions verisini trade_depots'a taşı (tek seferlik migration)

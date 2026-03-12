@@ -6,6 +6,8 @@ import com.cogtrade.database.DatabaseManager;
 import com.cogtrade.economy.PlayerEconomy;
 import com.cogtrade.market.PlayerShopManager;
 import com.cogtrade.network.*;
+import com.cogtrade.trade.DirectTradeManager;
+import com.cogtrade.trade.DirectTradeSession;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -89,6 +91,8 @@ public class CogTrade implements ModInitializer {
 
         // ── Veritabanı ────────────────────────────────────────────────────
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
+            // Reset runtime trade state from any previous world session
+            DirectTradeManager.reset();
             // Integrated server: gameDir/saves/LevelName/  |  Dedicated server: gameDir/
             java.nio.file.Path gameDir = FabricLoader.getInstance().getGameDir();
             java.nio.file.Path savesDir = gameDir.resolve("saves");
@@ -112,7 +116,16 @@ public class CogTrade implements ModInitializer {
 
             com.cogtrade.market.MarketManager.seedDefaultItemsIfEmpty();
         });
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> DatabaseManager.close());
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+            DirectTradeManager.shutdown();
+            DatabaseManager.close();
+        });
+
+        // ── Oyuncu ayrılışı: aktif takas/istek temizle ───────────────────
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            server.execute(() ->
+                    DirectTradeManager.handleDisconnect(server, handler.player.getUuid()));
+        });
 
         // ── Oyuncu katılımı ───────────────────────────────────────────────
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
@@ -238,6 +251,7 @@ public class CogTrade implements ModInitializer {
             com.cogtrade.commands.AdminCommand.register(dispatcher, registryAccess);
             com.cogtrade.commands.MarketCommand.register(dispatcher);
             com.cogtrade.commands.PlaceMarketCommand.register(dispatcher);
+            com.cogtrade.commands.TradeCommand.register(dispatcher);
         });
 
         // ── Sunucu Market: satın alma ─────────────────────────────────────
@@ -527,6 +541,49 @@ public class CogTrade implements ModInitializer {
                         String ownerName = PlayerShopManager.getOwnerName(ownerUuid);
                         OpenPlayerShopPacket.send(player, ownerUuid, ownerName, listings,
                                 available, com.cogtrade.config.CogTradeConfig.get().sellPriceMultiplier);
+                    });
+                });
+
+        // ── Doğrudan takas: eşya taşı ─────────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeItemMovePacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String sessionId = buf.readString();
+                    int offerSlot    = buf.readInt();
+                    int invSlot      = buf.readInt();
+                    server.execute(() ->
+                            DirectTradeManager.handleItemMove(server, player, sessionId, offerSlot, invSlot));
+                });
+
+        // ── Doğrudan takas: coin teklifi ──────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeCoinOfferPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String sessionId = buf.readString();
+                    double amount    = buf.readDouble();
+                    server.execute(() ->
+                            DirectTradeManager.handleCoinOffer(server, player, sessionId, amount));
+                });
+
+        // ── Doğrudan takas: hazır toggle ──────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeSetReadyPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String sessionId = buf.readString();
+                    server.execute(() ->
+                            DirectTradeManager.handleReadyToggle(server, player, sessionId));
+                });
+
+        // ── Doğrudan takas: iptal ──────────────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeCancelPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String sessionId = buf.readString();
+                    server.execute(() -> {
+                        DirectTradeSession session = DirectTradeManager.getSessionForPlayer(player.getUuid());
+                        if (session != null && session.getSessionId().equals(sessionId)) {
+                            DirectTradeManager.handleCancel(server, player, sessionId);
+                        }
                     });
                 });
 

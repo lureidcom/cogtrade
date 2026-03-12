@@ -3,13 +3,8 @@ package com.cogtrade.client;
 
 import com.cogtrade.CogTrade;
 import com.cogtrade.block.MarketBlockEntity;
-import com.cogtrade.network.AllShopListingsPacket;
-import com.cogtrade.network.BalanceUpdatePacket;
-import com.cogtrade.network.BuySoundPacket;
-import com.cogtrade.network.LocateMarketPacket;
-import com.cogtrade.network.LocateTradePostPacket;
-import com.cogtrade.network.OpenMarketPacket;
-import com.cogtrade.network.OpenTradePostManagePacket;
+import com.cogtrade.network.*;
+import net.minecraft.item.ItemStack;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -237,10 +232,85 @@ public class CogTradeClient implements ClientModInitializer {
                     client.execute(() -> ChestHighlightRenderer.setChests(positions));
                 });
 
+        // ── Doğrudan takas: GUI aç ────────────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                OpenDirectTradePacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    String sessionId    = buf.readString();
+                    boolean isInitiator = buf.readBoolean();
+                    String partnerName  = buf.readString();
+                    String partnerUuidStr = buf.readString(); // received but not stored; partnerName is used
+
+                    ItemStack[] myOffer      = new ItemStack[9];
+                    ItemStack[] partnerOffer = new ItemStack[9];
+                    for (int i = 0; i < 9; i++) myOffer[i]      = buf.readItemStack();
+                    for (int i = 0; i < 9; i++) partnerOffer[i] = buf.readItemStack();
+                    double  myCoins      = buf.readDouble();
+                    double  partnerCoins = buf.readDouble();
+                    boolean myReady      = buf.readBoolean();
+                    boolean partnerReady = buf.readBoolean();
+
+                    client.execute(() -> DirectTradeScreen.open(
+                            client, sessionId, partnerName,
+                            myOffer, partnerOffer,
+                            myCoins, partnerCoins,
+                            myReady, partnerReady));
+                });
+
+        // ── Doğrudan takas: durum güncelle ────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                TradeStateUpdatePacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    String sessionId = buf.readString(); // validated on server; client just updates if screen open
+
+                    ItemStack[] myOffer      = new ItemStack[9];
+                    ItemStack[] partnerOffer = new ItemStack[9];
+                    for (int i = 0; i < 9; i++) myOffer[i]      = buf.readItemStack();
+                    for (int i = 0; i < 9; i++) partnerOffer[i] = buf.readItemStack();
+                    double  myCoins      = buf.readDouble();
+                    double  partnerCoins = buf.readDouble();
+                    boolean myReady      = buf.readBoolean();
+                    boolean partnerReady = buf.readBoolean();
+
+                    client.execute(() -> DirectTradeScreen.updateState(
+                            myOffer, partnerOffer, myCoins, partnerCoins, myReady, partnerReady));
+                });
+
+        // ── Doğrudan takas: iptal edildi ──────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                DirectTradeCancelledPacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    String reason = buf.readString();
+                    client.execute(() ->
+                            DirectTradeScreen.closeFromServer(client,
+                                    "§e[CogTrade] §7Takas iptal edildi: " + reason));
+                });
+
+        // ── Doğrudan takas: başarıyla tamamlandı ──────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                TradeCompletePacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    String partnerName     = buf.readString();
+                    double myCoinsGiven    = buf.readDouble();
+                    double myCoinsReceived = buf.readDouble();
+                    client.execute(() -> {
+                        String msg = "§a[CogTrade] §fTakas tamamlandı! §7" + partnerName + " ile.";
+                        if (myCoinsGiven    > 0) msg += " §c-" + String.format("%.0f", myCoinsGiven)    + "⬡";
+                        if (myCoinsReceived > 0) msg += " §a+" + String.format("%.0f", myCoinsReceived) + "⬡";
+                        DirectTradeScreen.closeFromServer(client, msg);
+                        if (client.player != null) {
+                            client.player.playSound(
+                                    net.minecraft.sound.SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP,
+                                    net.minecraft.sound.SoundCategory.MASTER, 1.0f, 1.0f);
+                        }
+                    });
+                });
+
         // ── Bağlantı kesilince sıfırla ────────────────────────────────────
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             ClientEconomyData.reset();
             ChestHighlightRenderer.clear();
+            DirectTradeScreen.currentScreen = null;
         });
 
         CogTradeHud.register();

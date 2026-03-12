@@ -1,7 +1,7 @@
 package com.cogtrade.client;
 
 import com.cogtrade.market.PlayerShopManager;
-import com.cogtrade.network.DepotActionPacket;
+import com.cogtrade.network.DepotRefreshPacket;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -21,443 +21,410 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+/**
+ * Trade Depot yönetim ekranı.
+ * Sadece depo stok görünümü — fiyat ayarı / ilan yönetimi burada YAPILMAZ.
+ * İlanlar Trade Post bloğundan yönetilir.
+ */
 @Environment(EnvType.CLIENT)
 public class DepotScreen extends Screen {
 
-    // ── Colors ──────────────────────────────────────────────────────────
-    private static final int C_PANEL    = 0xFF282828;
-    private static final int C_BORDER   = 0xFF141414;
-    private static final int C_GOLD     = 0xFFFFD54F;
-    private static final int C_GREEN    = 0xFF66BB6A;
-    private static final int C_RED      = 0xFFEF5350;
-    private static final int C_TEXT     = 0xFFDDDDDD;
-    private static final int C_SUBTEXT  = 0xFF888888;
-    private static final int C_SLOT     = 0xFF373737;
-    private static final int C_HOVER    = 0xFF505050;
-    private static final int C_SEP      = 0xFF404040;
-    private static final int C_CYAN     = 0xFF4DD0E1;
-    private static final int C_SELECTED = 0xFF3A2E0E;
-    private static final int C_DARK     = 0xFF1E1E1E;
+    // ── Colors ──────────────────────────────────────────────────────────────
+    private static final int C_PANEL        = 0xFF1E1E1E;
+    private static final int C_BORDER       = 0xFF0A0A0A;
+    private static final int C_GOLD         = 0xFFFFD54F;
+    private static final int C_GREEN        = 0xFF66BB6A;
+    private static final int C_TEXT         = 0xFFDDDDDD;
+    private static final int C_SUBTEXT      = 0xFF888888;
+    private static final int C_SLOT         = 0xFF2D2D2D;
+    private static final int C_SLOT_HOVER   = 0xFF424242;
+    private static final int C_SLOT_SEL     = 0xFF8B6914;
+    private static final int C_SLOT_LISTED  = 0xFF1A3020;   // yeşil tint — Trade Post'ta satışta
+    private static final int C_SEP          = 0xFF3A3A3A;
+    private static final int C_CYAN         = 0xFF4DD0E1;
+    private static final int C_DARK         = 0xFF141414;
+    private static final int C_CAT_ACT      = 0xFF3A2E0E;
+    private static final int C_CAT_IN       = 0xFF252525;
+    private static final int C_DETAIL_BG    = 0xFF1A1A1A;
+    private static final int C_RED          = 0xFFEF5350;
 
-    private static final String[] CATEGORIES = { "Misc", "Blok", "Yiyecek", "Araç", "Hammadde" };
+    private static final int  SLOT_SIZE  = 36;
+    private static final int  SLOT_GAP   = 4;
+    private static final String[] CATEGORIES = {"Tümü", "Satışta", "Satışta Değil"};
 
-    // ── Data ─────────────────────────────────────────────────────────────
-    private final Map<String, Integer> available;
-    private final List<PlayerShopManager.ShopListing> listings;
+    // ── Data ────────────────────────────────────────────────────────────────
+    private Map<String, Integer>                    available;
+    private List<PlayerShopManager.ShopListing>     listings;  // read-only, Trade Post'tan gelir
 
-    // Filtered/sorted views
-    private List<Map.Entry<String, Integer>> filteredAvailable;
-    private List<PlayerShopManager.ShopListing> filteredListings;
+    // Filtered views
+    private List<Map.Entry<String, Integer>>        gridItems;
 
-    // ── UI State ──────────────────────────────────────────────────────────
-    private int scrollAvailable = 0;
-    private int scrollListings  = 0;
-    private int selectedAvailableIndex = -1;
-    private int selectedListingIndex   = -1;
+    // ── UI State ────────────────────────────────────────────────────────────
+    private int    selectedCatIdx = 0;
     private String selectedItemId = null;
-    private int selectedCategoryIdx = 0;  // for "category" when adding
-    private int availSortMode = 0;         // 0=Name↑ 1=Name↓ 2=Count↑ 3=Count↓
-    private int listingSortMode = 0;       // 0=Name  1=Price↑ 2=Price↓
+    private int    gridScroll     = 0;
+    private int    refreshTick    = 0;
 
-    // ── Layout ────────────────────────────────────────────────────────────
+    // ── Layout ──────────────────────────────────────────────────────────────
     private int panelX, panelY, panelW, panelH;
-    private int leftX, leftY, leftW, leftH;
-    private int rightX, rightY, rightW, rightH;
-    private int footerY;
+    private int catX,   catY,   catW,   catH;
+    private int gridX,  gridY,  gridW,  gridH;
+    private int detailX, detailY, detailW, detailH;
 
-    // ── Widgets ────────────────────────────────────────────────────────────
+    // ── Widgets ─────────────────────────────────────────────────────────────
     private TextFieldWidget searchField;
-    private TextFieldWidget priceField;
-    private ButtonWidget addButton;
-    private ButtonWidget removeButton;
-    private ButtonWidget categoryButton;
-    private ButtonWidget availSortButton;
-    private ButtonWidget listingSortButton;
+    private String          searchQuery = "";
 
+    // ── Constructor ─────────────────────────────────────────────────────────
     public DepotScreen(Map<String, Integer> available,
                        List<PlayerShopManager.ShopListing> listings) {
-        super(Text.literal("Trade Depot — Stok Yönetimi"));
-        this.available = available;
+        super(Text.literal("Trade Depot"));
+        this.available = new LinkedHashMap<>(available);
         this.listings  = new ArrayList<>(listings);
-        this.filteredAvailable = new ArrayList<>(available.entrySet());
-        this.filteredListings  = new ArrayList<>(listings);
     }
 
+    /** Sunucudan gelen güncel veriyle ekranı yenile (yeniden init yapmadan). */
+    public void refresh(Map<String, Integer> newAvailable,
+                        List<PlayerShopManager.ShopListing> newListings) {
+        this.available = new LinkedHashMap<>(newAvailable);
+        this.listings  = new ArrayList<>(newListings);
+        applyFilters();
+    }
+
+    // ── Init ────────────────────────────────────────────────────────────────
     @Override
     protected void init() {
-        panelW = Math.min(720, width - 20);
-        panelH = Math.min(460, height - 20);
-        panelX = (width - panelW) / 2;
-        panelY = (height - panelH) / 2;
+        computeLayout();
 
-        int halfW = (panelW - 18) / 2;
-        leftW  = halfW;
-        rightW = panelW - halfW - 18;
-        leftX  = panelX + 6;
-        rightX = panelX + halfW + 12;
-        leftY  = panelY + 50;
-        rightY = panelY + 50;
-        footerY = panelY + panelH - 54;
-        leftH  = footerY - leftY - 6;
-        rightH = leftH;
-
-        // ── Close ──────────────────────────────────────────────────────────
-        addDrawableChild(ButtonWidget.builder(Text.literal("✕"), btn -> close())
-                .dimensions(panelX + panelW - 17, panelY + 4, 13, 13).build());
-
-        // ── Search field (left column) ────────────────────────────────────
         searchField = new TextFieldWidget(textRenderer,
-                leftX + 1, panelY + 28, leftW - 64, 14, Text.literal("Ara"));
+                gridX + 4, panelY + 6, gridW - 8, 14, Text.literal("Ara"));
         searchField.setMaxLength(40);
-        searchField.setSuggestion("İtem ara...");
-        searchField.setChangedListener(s -> applyFilters());
+        searchField.setSuggestion("Stokta ara...");
+        searchField.setText(searchQuery);
+        searchField.setChangedListener(s -> { searchQuery = s; applyFilters(); });
         addDrawableChild(searchField);
 
-        // ── Available sort button ─────────────────────────────────────────
-        availSortButton = ButtonWidget.builder(
-                Text.literal(getAvailSortLabel()),
-                btn -> {
-                    availSortMode = (availSortMode + 1) % 4;
-                    applyFilters();
-                    btn.setMessage(Text.literal(getAvailSortLabel()));
-                })
-                .dimensions(leftX + leftW - 60, panelY + 26, 60, 16).build();
-        addDrawableChild(availSortButton);
-
-        // ── Listing sort button ───────────────────────────────────────────
-        listingSortButton = ButtonWidget.builder(
-                Text.literal(getListingSortLabel()),
-                btn -> {
-                    listingSortMode = (listingSortMode + 1) % 3;
-                    applyFilters();
-                    btn.setMessage(Text.literal(getListingSortLabel()));
-                })
-                .dimensions(rightX + rightW - 62, panelY + 26, 62, 16).build();
-        addDrawableChild(listingSortButton);
-
-        // ── Footer widgets ────────────────────────────────────────────────
-        priceField = new TextFieldWidget(textRenderer,
-                panelX + 6, footerY + 30, 100, 14, Text.literal("Fiyat"));
-        priceField.setMaxLength(10);
-        priceField.setSuggestion("Fiyat...");
-        addDrawableChild(priceField);
-
-        categoryButton = ButtonWidget.builder(
-                Text.literal("§7Kat: §f" + CATEGORIES[selectedCategoryIdx]),
-                btn -> {
-                    selectedCategoryIdx = (selectedCategoryIdx + 1) % CATEGORIES.length;
-                    btn.setMessage(Text.literal("§7Kat: §f" + CATEGORIES[selectedCategoryIdx]));
-                })
-                .dimensions(panelX + 110, footerY + 28, 84, 16).build();
-        addDrawableChild(categoryButton);
-
-        addButton = ButtonWidget.builder(Text.literal("§a+ Satışa Ekle"), btn -> handleAdd())
-                .dimensions(panelX + 198, footerY + 28, 110, 16).build();
-        addDrawableChild(addButton);
-
-        removeButton = ButtonWidget.builder(Text.literal("§c− Kaldır"), btn -> handleRemove())
-                .dimensions(panelX + 312, footerY + 28, 80, 16).build();
-        addDrawableChild(removeButton);
+        addDrawableChild(ButtonWidget.builder(Text.literal("✕"), btn -> close())
+                .dimensions(panelX + panelW - 17, panelY + 4, 13, 13).build());
 
         applyFilters();
     }
 
-    // ── Sort label helpers ─────────────────────────────────────────────────
-    private String getAvailSortLabel() {
-        return switch (availSortMode) {
-            case 1 -> "Ad ↓";
-            case 2 -> "Adet ↑";
-            case 3 -> "Adet ↓";
-            default -> "Ad ↑";
-        };
+    private void computeLayout() {
+        panelW = Math.min(760, width - 20);
+        panelH = Math.min(470, height - 20);
+        panelX = (width  - panelW) / 2;
+        panelY = (height - panelH) / 2;
+
+        catW = 110;
+        catX = panelX + 4;
+        catY = panelY + 26;
+        catH = panelH - 30;
+
+        detailW = Math.max(165, Math.min(185, panelW / 4));
+        detailX = panelX + panelW - detailW - 4;
+        detailY = panelY + 26;
+        detailH = panelH - 30;
+
+        gridX = catX + catW + 4;
+        gridY = panelY + 26;
+        gridW = detailX - gridX - 4;
+        gridH = panelH - 30;
     }
 
-    private String getListingSortLabel() {
-        return switch (listingSortMode) {
-            case 1 -> "Fiyat ↑";
-            case 2 -> "Fiyat ↓";
-            default -> "Ad";
-        };
-    }
-
-    // ── Filter / Sort ──────────────────────────────────────────────────────
+    // ── Filter ──────────────────────────────────────────────────────────────
     private void applyFilters() {
-        String query = searchField != null ? searchField.getText().trim().toLowerCase(Locale.ROOT) : "";
+        String q = searchQuery.trim().toLowerCase(Locale.ROOT);
+        Set<String> listedIds = listings.stream()
+                .map(PlayerShopManager.ShopListing::itemId)
+                .collect(Collectors.toSet());
 
-        filteredAvailable = available.entrySet().stream()
-                .filter(e -> query.isEmpty() ||
-                        getDisplayName(e.getKey()).toLowerCase(Locale.ROOT).contains(query))
+        Stream<Map.Entry<String, Integer>> stream = available.entrySet().stream();
+        if (!q.isEmpty())
+            stream = stream.filter(e ->
+                    getDisplayName(e.getKey()).toLowerCase(Locale.ROOT).contains(q));
+        if (selectedCatIdx == 1)
+            stream = stream.filter(e -> listedIds.contains(e.getKey()));
+        else if (selectedCatIdx == 2)
+            stream = stream.filter(e -> !listedIds.contains(e.getKey()));
+
+        gridItems = stream
+                .sorted(Comparator.comparing(e -> getDisplayName(e.getKey())))
                 .collect(Collectors.toList());
 
-        Comparator<Map.Entry<String, Integer>> availComp = switch (availSortMode) {
-            case 1 -> Comparator.<Map.Entry<String, Integer>, String>
-                    comparing(e -> getDisplayName(e.getKey())).reversed();
-            case 2 -> Comparator.comparingInt(Map.Entry::getValue);
-            case 3 -> Comparator.<Map.Entry<String, Integer>>
-                    comparingInt(Map.Entry::getValue).reversed();
-            default -> Comparator.comparing(e -> getDisplayName(e.getKey()));
-        };
-        filteredAvailable.sort(availComp);
-
-        filteredListings = new ArrayList<>(listings);
-        Comparator<PlayerShopManager.ShopListing> listComp = switch (listingSortMode) {
-            case 1 -> Comparator.comparingDouble(PlayerShopManager.ShopListing::price);
-            case 2 -> Comparator.<PlayerShopManager.ShopListing>
-                    comparingDouble(PlayerShopManager.ShopListing::price).reversed();
-            default -> Comparator.comparing(PlayerShopManager.ShopListing::displayName);
-        };
-        filteredListings.sort(listComp);
-
-        scrollAvailable = 0;
-        scrollListings  = 0;
-        selectedAvailableIndex = -1;
-        selectedListingIndex   = -1;
-        selectedItemId = null;
+        gridScroll = 0;
+        if (selectedItemId != null &&
+                gridItems.stream().noneMatch(e -> e.getKey().equals(selectedItemId)))
+            selectedItemId = null;
     }
 
-    // ── Action handlers ────────────────────────────────────────────────────
-    private void handleAdd() {
-        if (selectedItemId == null) return;
-        double price;
-        try { price = Double.parseDouble(priceField.getText()); }
-        catch (NumberFormatException e) { return; }
-        if (price <= 0) return;
-
-        String category = CATEGORIES[selectedCategoryIdx];
-        PacketByteBuf buf = PacketByteBufs.create();
-        buf.writeInt(DepotActionPacket.ACTION_ADD);
-        buf.writeString(selectedItemId);
-        buf.writeDouble(price);
-        buf.writeString(category);
-        ClientPlayNetworking.send(DepotActionPacket.ID, buf);
+    // ── Tick (real-time refresh) ─────────────────────────────────────────────
+    @Override
+    public void tick() {
+        super.tick();
+        if (++refreshTick >= 40) {
+            refreshTick = 0;
+            PacketByteBuf buf = PacketByteBufs.create();
+            ClientPlayNetworking.send(DepotRefreshPacket.ID, buf);
+        }
     }
 
-    private void handleRemove() {
-        if (selectedListingIndex < 0 || selectedListingIndex >= filteredListings.size()) return;
-        String itemId = filteredListings.get(selectedListingIndex).itemId();
-        PacketByteBuf buf = PacketByteBufs.create();
-        buf.writeInt(DepotActionPacket.ACTION_REMOVE);
-        buf.writeString(itemId);
-        buf.writeDouble(0);
-        buf.writeString("");
-        ClientPlayNetworking.send(DepotActionPacket.ID, buf);
-    }
-
-    // ── Render ─────────────────────────────────────────────────────────────
+    // ── Render ───────────────────────────────────────────────────────────────
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
         renderBackground(ctx);
-        drawPanel(ctx);
-        drawAvailableList(ctx, mouseX, mouseY);
-        drawListingsList(ctx, mouseX, mouseY);
-        drawFooter(ctx);
+        drawFrame(ctx);
+        drawCategoryPanel(ctx, mouseX, mouseY);
+        drawGrid(ctx, mouseX, mouseY);
+        drawDetailPanel(ctx, mouseX, mouseY);
         super.render(ctx, mouseX, mouseY, delta);
     }
 
-    private void drawPanel(DrawContext ctx) {
-        // Outer border + panel
+    private void drawFrame(DrawContext ctx) {
         ctx.fill(panelX, panelY, panelX + panelW, panelY + panelH, C_BORDER);
         ctx.fill(panelX + 1, panelY + 1, panelX + panelW - 1, panelY + panelH - 1, C_PANEL);
 
-        // Title
         ctx.drawCenteredTextWithShadow(textRenderer,
-                "§6✦ Trade Depot — Stok Yönetimi ✦",
+                "§6✦ Trade Depot — Depo Görünümü ✦",
                 panelX + panelW / 2, panelY + 8, C_GOLD);
-        ctx.fill(panelX + 3, panelY + 20, panelX + panelW - 3, panelY + 21, C_SEP);
+        ctx.fill(panelX + 3, panelY + 22, panelX + panelW - 3, panelY + 23, C_SEP);
 
-        // Footer separator
-        ctx.fill(panelX + 3, footerY - 2, panelX + panelW - 3, footerY - 1, C_SEP);
-
-        // Mid divider (vertical between columns)
-        int midX = rightX - 3;
-        ctx.fill(midX, panelY + 22, midX + 1, footerY - 2, C_SEP);
+        ctx.fill(catX + catW + 1, panelY + 24, catX + catW + 2, panelY + panelH - 3, C_SEP);
+        ctx.fill(detailX - 3,     panelY + 24, detailX - 2,     panelY + panelH - 3, C_SEP);
     }
 
-    private void drawAvailableList(DrawContext ctx, int mouseX, int mouseY) {
-        // Column header
-        ctx.drawText(textRenderer,
-                "§7Sandıklardaki İtemler §8(§a" + filteredAvailable.size() + "§8)",
-                leftX, panelY + 23, C_SUBTEXT, false);
+    // ── Category panel ────────────────────────────────────────────────────────
+    private void drawCategoryPanel(DrawContext ctx, int mouseX, int mouseY) {
+        ctx.fill(catX, catY, catX + catW, catY + catH, C_DARK);
 
-        // List box
-        ctx.fill(leftX, leftY, leftX + leftW, leftY + leftH, C_BORDER);
-        ctx.fill(leftX + 1, leftY + 1, leftX + leftW - 1, leftY + leftH - 1, C_DARK);
+        int tabH = 20;
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            int ty  = catY + i * (tabH + 2);
+            boolean sel = i == selectedCatIdx;
+            boolean hov = mouseX >= catX && mouseX < catX + catW
+                    && mouseY >= ty && mouseY < ty + tabH;
 
-        if (filteredAvailable.isEmpty()) {
+            ctx.fill(catX, ty, catX + catW, ty + tabH,
+                    sel ? C_CAT_ACT : (hov ? 0xFF303030 : C_CAT_IN));
+            ctx.fill(catX, ty + tabH - 1, catX + catW, ty + tabH,
+                    sel ? C_GOLD : C_SEP);
+            ctx.drawText(textRenderer, sel ? "§6" + CATEGORIES[i] : "§7" + CATEGORIES[i],
+                    catX + 7, ty + 6, sel ? C_GOLD : C_SUBTEXT, false);
+        }
+
+        int badgeY = catY + CATEGORIES.length * (tabH + 2) + 8;
+        ctx.drawText(textRenderer, "§8Stok: §f" + available.size(),
+                catX + 5, badgeY, C_SUBTEXT, false);
+        ctx.drawText(textRenderer, "§8Satışta: §e" + listings.size(),
+                catX + 5, badgeY + 11, C_SUBTEXT, false);
+
+        // Info note
+        int noteY = badgeY + 26;
+        ctx.drawText(textRenderer, "§7İlanlar Trade", catX + 5, noteY,      C_SUBTEXT, false);
+        ctx.drawText(textRenderer, "§7Post'tan yön.", catX + 5, noteY + 10, C_SUBTEXT, false);
+    }
+
+    // ── Grid ─────────────────────────────────────────────────────────────────
+    private void drawGrid(DrawContext ctx, int mouseX, int mouseY) {
+        int gx = gridX + 4;
+        int gy = gridY + 24;
+        int gw = gridW - 8;
+        int gh = gridH - 28;
+
+        ctx.fill(gridX, gridY + 22, gridX + gridW, gridY + gridH, C_DARK);
+
+        if (gridItems.isEmpty()) {
             ctx.drawCenteredTextWithShadow(textRenderer,
-                    available.isEmpty() ? "Sandıklarda item yok" : "Sonuç bulunamadı",
-                    leftX + leftW / 2, leftY + leftH / 2 - 4, C_SUBTEXT);
+                    available.isEmpty() ? "§7Sandıklarda item yok" : "§7Sonuç bulunamadı",
+                    gx + gw / 2, gy + gh / 2 - 4, C_SUBTEXT);
             return;
         }
 
-        int rowH = 20;
-        int visibleRows = (leftH - 2) / rowH;
-        int maxScroll = Math.max(0, filteredAvailable.size() - visibleRows);
-        scrollAvailable = Math.max(0, Math.min(scrollAvailable, maxScroll));
+        int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
+        int visRows   = Math.max(1, gh / (SLOT_SIZE + SLOT_GAP));
+        int totalRows = (gridItems.size() + totalCols - 1) / totalCols;
+        int maxScroll = Math.max(0, totalRows - visRows);
+        gridScroll    = Math.max(0, Math.min(gridScroll, maxScroll));
 
-        for (int i = 0; i < visibleRows && (i + scrollAvailable) < filteredAvailable.size(); i++) {
-            int idx = i + scrollAvailable;
-            Map.Entry<String, Integer> entry = filteredAvailable.get(idx);
-            int ry = leftY + 1 + i * rowH;
-            boolean hov = mouseX >= leftX + 1 && mouseX < leftX + leftW - 2
-                    && mouseY >= ry && mouseY < ry + rowH;
-            boolean sel = entry.getKey().equals(selectedItemId);
+        Set<String> listedIds = listings.stream()
+                .map(PlayerShopManager.ShopListing::itemId)
+                .collect(Collectors.toSet());
 
-            ctx.fill(leftX + 1, ry, leftX + leftW - 2, ry + rowH - 1,
-                    sel ? C_SELECTED : (hov ? C_HOVER : C_SLOT));
+        for (int row = 0; row < visRows; row++) {
+            int absRow = row + gridScroll;
+            for (int col = 0; col < totalCols; col++) {
+                int idx = absRow * totalCols + col;
+                if (idx >= gridItems.size()) break;
 
-            ItemStack stack = getStack(entry.getKey());
-            if (!stack.isEmpty()) ctx.drawItem(stack, leftX + 3, ry + 2);
+                Map.Entry<String, Integer> entry = gridItems.get(idx);
+                String itemId = entry.getKey();
+                int count     = entry.getValue();
 
-            String name = truncate(getDisplayName(entry.getKey()), leftW - 58);
-            ctx.drawText(textRenderer, name, leftX + 22, ry + 6,
-                    sel ? C_GOLD : C_TEXT, false);
+                int sx = gx + col * (SLOT_SIZE + SLOT_GAP);
+                int sy = gy + row * (SLOT_SIZE + SLOT_GAP);
 
-            String countStr = "×" + entry.getValue();
-            ctx.drawText(textRenderer, countStr,
-                    leftX + leftW - 6 - textRenderer.getWidth(countStr), ry + 6,
-                    C_GREEN, false);
-        }
+                boolean hov    = mouseX >= sx && mouseX < sx + SLOT_SIZE
+                        && mouseY >= sy && mouseY < sy + SLOT_SIZE;
+                boolean sel    = itemId.equals(selectedItemId);
+                boolean listed = listedIds.contains(itemId);
 
-        drawScrollbar(ctx, leftX + leftW - 3, leftY, leftH,
-                filteredAvailable.size(), visibleRows, scrollAvailable);
-    }
+                int bgCol = sel ? C_SLOT_SEL : listed ? C_SLOT_LISTED : hov ? C_SLOT_HOVER : C_SLOT;
+                ctx.fill(sx, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, C_BORDER);
+                ctx.fill(sx + 1, sy + 1, sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, bgCol);
 
-    private void drawListingsList(DrawContext ctx, int mouseX, int mouseY) {
-        // Column header
-        ctx.drawText(textRenderer,
-                "§7Aktif Satışlar §8(§e" + filteredListings.size() + "§8)",
-                rightX, panelY + 23, C_SUBTEXT, false);
+                ItemStack stack = getStack(itemId);
+                if (!stack.isEmpty())
+                    ctx.drawItem(stack, sx + (SLOT_SIZE - 16) / 2, sy + (SLOT_SIZE - 16) / 2 - 2);
 
-        // List box
-        ctx.fill(rightX, rightY, rightX + rightW, rightY + rightH, C_BORDER);
-        ctx.fill(rightX + 1, rightY + 1, rightX + rightW - 1, rightY + rightH - 1, C_DARK);
+                // Count badge
+                String countStr = count >= 1000 ? (count / 1000) + "k" : String.valueOf(count);
+                int cw = textRenderer.getWidth(countStr);
+                ctx.fill(sx + SLOT_SIZE - cw - 3, sy + SLOT_SIZE - 9,
+                        sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, 0xAA000000);
+                ctx.drawText(textRenderer, countStr,
+                        sx + SLOT_SIZE - cw - 2, sy + SLOT_SIZE - 8,
+                        listed ? C_GREEN : C_TEXT, false);
 
-        if (filteredListings.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(textRenderer, "Satışta ürün yok",
-                    rightX + rightW / 2, rightY + rightH / 2 - 4, C_SUBTEXT);
-            return;
-        }
-
-        int rowH = 20;
-        int visibleRows = (rightH - 2) / rowH;
-        int maxScroll = Math.max(0, filteredListings.size() - visibleRows);
-        scrollListings = Math.max(0, Math.min(scrollListings, maxScroll));
-
-        for (int i = 0; i < visibleRows && (i + scrollListings) < filteredListings.size(); i++) {
-            int idx = i + scrollListings;
-            PlayerShopManager.ShopListing listing = filteredListings.get(idx);
-            int ry = rightY + 1 + i * rowH;
-            boolean hov = mouseX >= rightX + 1 && mouseX < rightX + rightW - 2
-                    && mouseY >= ry && mouseY < ry + rowH;
-            boolean sel = idx == selectedListingIndex;
-
-            ctx.fill(rightX + 1, ry, rightX + rightW - 2, ry + rowH - 1,
-                    sel ? C_SELECTED : (hov ? C_HOVER : C_SLOT));
-
-            ItemStack stack = getStack(listing.itemId());
-            if (!stack.isEmpty()) ctx.drawItem(stack, rightX + 3, ry + 2);
-
-            // Category chip
-            String cat = listing.category();
-            int catW = textRenderer.getWidth(cat) + 6;
-            ctx.fill(rightX + 22, ry + 4, rightX + 22 + catW, ry + 15, 0xFF1A2A3A);
-            ctx.drawText(textRenderer, cat, rightX + 25, ry + 6, C_CYAN, false);
-
-            // Item name
-            String name = truncate(listing.displayName(), rightW - catW - 60);
-            ctx.drawText(textRenderer, name, rightX + 24 + catW, ry + 6,
-                    sel ? C_GOLD : C_TEXT, false);
-
-            // Price
-            String priceStr = "⬡" + formatPrice(listing.price());
-            ctx.drawText(textRenderer, priceStr,
-                    rightX + rightW - 6 - textRenderer.getWidth(priceStr), ry + 6,
-                    C_GOLD, false);
-        }
-
-        drawScrollbar(ctx, rightX + rightW - 3, rightY, rightH,
-                filteredListings.size(), visibleRows, scrollListings);
-    }
-
-    private void drawFooter(DrawContext ctx) {
-        // Background
-        ctx.fill(panelX + 1, footerY, panelX + panelW - 1, panelY + panelH - 1, 0xFF222222);
-
-        // Selected item row
-        if (selectedItemId != null) {
-            ItemStack stack = getStack(selectedItemId);
-            if (!stack.isEmpty()) ctx.drawItem(stack, panelX + 6, footerY + 4);
-            ctx.drawText(textRenderer, "§f" + truncate(getDisplayName(selectedItemId), 110),
-                    panelX + 26, footerY + 8, C_TEXT, false);
-
-            // Sandık count hint
-            Integer count = available.get(selectedItemId);
-            if (count != null) {
-                String hint = "§7(§a×" + count + " §7sandıkta)";
-                ctx.drawText(textRenderer, hint, panelX + 26 + textRenderer.getWidth(
-                        getDisplayName(selectedItemId)) + 4, footerY + 8, C_SUBTEXT, false);
+                // Sold indicator
+                if (listed) {
+                    ctx.fill(sx + 1, sy + 1, sx + 8, sy + 7, 0xAA1A4020);
+                    ctx.drawText(textRenderer, "§a✓", sx + 1, sy + 1, C_GREEN, false);
+                }
             }
-        } else {
-            ctx.drawText(textRenderer, "§7Sol panelden bir item seçin →",
-                    panelX + 6, footerY + 8, C_SUBTEXT, false);
         }
 
-        // Price label
-        ctx.drawText(textRenderer, "§7Fiyat:", panelX + 6, footerY + 32, C_SUBTEXT, false);
+        // Scrollbar
+        if (maxScroll > 0) {
+            int sbX = gridX + gridW - 4;
+            ctx.fill(sbX, gy, sbX + 2, gy + gh, 0xFF2A2A2A);
+            int barH = Math.max(12, gh * visRows / totalRows);
+            int barY = gy + gridScroll * (gh - barH) / maxScroll;
+            ctx.fill(sbX, barY, sbX + 2, barY + barH, 0xFF666666);
+        }
     }
 
-    private void drawScrollbar(DrawContext ctx, int x, int y, int h,
-                                int total, int visible, int scroll) {
-        if (total <= visible) return;
-        ctx.fill(x, y, x + 2, y + h, 0xFF2A2A2A);
-        int barH = Math.max(12, h * visible / total);
-        int barY = y + scroll * (h - barH) / Math.max(1, total - visible);
-        ctx.fill(x, barY, x + 2, barY + barH, 0xFF666666);
+    // ── Detail panel (read-only) ──────────────────────────────────────────────
+    private void drawDetailPanel(DrawContext ctx, int mouseX, int mouseY) {
+        ctx.fill(detailX, detailY, detailX + detailW, detailY + detailH, C_BORDER);
+        ctx.fill(detailX + 1, detailY + 1, detailX + detailW - 1, detailY + detailH - 1, C_DETAIL_BG);
+
+        int cx = detailX + detailW / 2;
+
+        if (selectedItemId == null) {
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§7Grid'den item seçin", cx, detailY + 40, C_SUBTEXT);
+            drawInfoNote(ctx, cx);
+            return;
+        }
+
+        int y = detailY + 8;
+
+        // Icon box
+        int boxS = 20;
+        int boxX = cx - boxS / 2;
+        ctx.fill(boxX - 3, y - 3, boxX + boxS + 3, y + boxS + 3, 0xFF333333);
+        ctx.fill(boxX - 2, y - 2, boxX + boxS + 2, y + boxS + 2, 0xFF1A1A1A);
+        ItemStack stack = getStack(selectedItemId);
+        if (!stack.isEmpty()) ctx.drawItem(stack, boxX + 2, y + 2);
+        y += boxS + 8;
+
+        // Name
+        String name = truncate(getDisplayName(selectedItemId), detailW - 12);
+        ctx.drawCenteredTextWithShadow(textRenderer, "§f" + name, cx, y, C_TEXT);
+        y += 12;
+
+        // Count in chests
+        int chestCount = available.getOrDefault(selectedItemId, 0);
+        ctx.drawCenteredTextWithShadow(textRenderer,
+                "§7Sandıkta: §a×" + chestCount, cx, y, C_SUBTEXT);
+        y += 14;
+
+        // Separator
+        ctx.fill(detailX + 6, y, detailX + detailW - 6, y + 1, C_SEP);
+        y += 8;
+
+        // Listing status (read-only)
+        Optional<PlayerShopManager.ShopListing> listing = listings.stream()
+                .filter(l -> l.itemId().equals(selectedItemId))
+                .findFirst();
+
+        if (listing.isPresent()) {
+            PlayerShopManager.ShopListing cl = listing.get();
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§a● Trade Post'ta Satışta", cx, y, C_GREEN);
+            y += 12;
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§6⬡" + formatPrice(cl.price()) + " §8/ adet", cx, y, C_GOLD);
+            y += 12;
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§8Kat: §7" + cl.category(), cx, y, C_SUBTEXT);
+        } else {
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§c○ Trade Post'ta Değil", cx, y, C_RED);
+            y += 12;
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§8Trade Post'u aç ve", cx, y, C_SUBTEXT);
+            y += 10;
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§8buradan satışa ekle.", cx, y, C_SUBTEXT);
+        }
+
+        y += 20;
+        drawInfoNote(ctx, cx);
     }
 
-    // ── Mouse / Key ────────────────────────────────────────────────────────
+    private void drawInfoNote(DrawContext ctx, int cx) {
+        int iy = detailY + detailH - 40;
+        ctx.fill(detailX + 4, iy - 4, detailX + detailW - 4, detailY + detailH - 4, 0xFF0D1A10);
+        ctx.drawCenteredTextWithShadow(textRenderer,
+                "§8İlan yönetimi için", cx, iy,      C_SUBTEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer,
+                "§8Trade Post'a tıkla", cx, iy + 11, C_SUBTEXT);
+    }
+
+    // ── Mouse ────────────────────────────────────────────────────────────────
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
-        int rowH = 20;
-
-        // Left panel
-        int visL = (leftH - 2) / rowH;
-        for (int i = 0; i < visL && (i + scrollAvailable) < filteredAvailable.size(); i++) {
-            int idx = i + scrollAvailable;
-            int ry = leftY + 1 + i * rowH;
-            if (mx >= leftX + 1 && mx < leftX + leftW - 2 && my >= ry && my < ry + rowH) {
-                selectedAvailableIndex = idx;
-                selectedItemId = filteredAvailable.get(idx).getKey();
-                priceField.setText("");
-                priceField.setSuggestion("Fiyat gir...");
+        int tabH = 20;
+        for (int i = 0; i < CATEGORIES.length; i++) {
+            int ty = catY + i * (tabH + 2);
+            if (mx >= catX && mx < catX + catW && my >= ty && my < ty + tabH) {
+                if (selectedCatIdx != i) { selectedCatIdx = i; applyFilters(); }
                 return true;
             }
         }
 
-        // Right panel
-        int visR = (rightH - 2) / rowH;
-        for (int i = 0; i < visR && (i + scrollListings) < filteredListings.size(); i++) {
-            int idx = i + scrollListings;
-            int ry = rightY + 1 + i * rowH;
-            if (mx >= rightX + 1 && mx < rightX + rightW - 2 && my >= ry && my < ry + rowH) {
-                selectedListingIndex = idx;
-                return true;
+        int gx = gridX + 4, gy = gridY + 24, gw = gridW - 8, gh = gridH - 28;
+        int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
+        int visRows   = Math.max(1, gh / (SLOT_SIZE + SLOT_GAP));
+
+        for (int row = 0; row < visRows; row++) {
+            int absRow = row + gridScroll;
+            for (int col = 0; col < totalCols; col++) {
+                int idx = absRow * totalCols + col;
+                if (idx >= gridItems.size()) break;
+                int sx = gx + col * (SLOT_SIZE + SLOT_GAP);
+                int sy = gy + row * (SLOT_SIZE + SLOT_GAP);
+                if (mx >= sx && mx < sx + SLOT_SIZE && my >= sy && my < sy + SLOT_SIZE) {
+                    selectedItemId = gridItems.get(idx).getKey();
+                    return true;
+                }
             }
         }
-
         return super.mouseClicked(mx, my, button);
     }
 
     @Override
     public boolean mouseScrolled(double mx, double my, double amount) {
-        if (mx >= leftX && mx < leftX + leftW && my >= leftY && my < leftY + leftH) {
-            scrollAvailable = Math.max(0, scrollAvailable - (int) amount);
-            return true;
-        }
-        if (mx >= rightX && mx < rightX + rightW && my >= rightY && my < rightY + rightH) {
-            scrollListings = Math.max(0, scrollListings - (int) amount);
+        int gx = gridX + 4, gy = gridY + 24, gw = gridW - 8, gh = gridH - 28;
+        if (mx >= gx && mx < gx + gw && my >= gy && my < gy + gh) {
+            int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
+            int totalRows = (gridItems.size() + totalCols - 1) / totalCols;
+            int visRows   = gh / (SLOT_SIZE + SLOT_GAP);
+            int maxScroll = Math.max(0, totalRows - visRows);
+            gridScroll    = Math.max(0, Math.min(gridScroll - (int) amount, maxScroll));
             return true;
         }
         return super.mouseScrolled(mx, my, amount);
@@ -469,17 +436,17 @@ public class DepotScreen extends Screen {
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ──────────────────────────────────────────────────────────────
     private String truncate(String s, int maxPx) {
         if (textRenderer.getWidth(s) <= maxPx) return s;
-        while (s.length() > 0 && textRenderer.getWidth(s + "…") > maxPx)
+        while (!s.isEmpty() && textRenderer.getWidth(s + "…") > maxPx)
             s = s.substring(0, s.length() - 1);
         return s + "…";
     }
 
     private String formatPrice(double p) {
         if (p >= 1_000_000) return String.format("%.1fM", p / 1_000_000);
-        if (p >= 1_000) return String.format("%.1fK", p / 1_000);
+        if (p >= 1_000)     return String.format("%.1fK", p / 1_000);
         return String.format("%.0f", p);
     }
 
@@ -494,8 +461,8 @@ public class DepotScreen extends Screen {
         try {
             Item item = Registries.ITEM.get(new Identifier(itemId));
             if (item == Items.AIR) return itemId;
-            String name = item.getDefaultStack().getName().getString();
-            return name.isBlank() ? itemId : name;
+            String n = item.getDefaultStack().getName().getString();
+            return n.isBlank() ? itemId : n;
         } catch (Exception e) { return itemId; }
     }
 

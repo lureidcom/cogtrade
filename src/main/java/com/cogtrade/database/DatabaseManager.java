@@ -93,18 +93,32 @@ public class DatabaseManager {
             """;
 
         // Trade Depot / Trade Post sistemi
+        // player_shops: sahip kaydı + Trade Post konumu
         String playerShopsTable = """
                 CREATE TABLE IF NOT EXISTS player_shops (
                     owner_uuid TEXT PRIMARY KEY,
                     owner_name TEXT NOT NULL,
-                    depot_world TEXT NOT NULL,
-                    depot_x INTEGER NOT NULL,
-                    depot_y INTEGER NOT NULL,
-                    depot_z INTEGER NOT NULL,
+                    depot_world TEXT NOT NULL DEFAULT 'N/A',
+                    depot_x INTEGER NOT NULL DEFAULT 0,
+                    depot_y INTEGER NOT NULL DEFAULT 0,
+                    depot_z INTEGER NOT NULL DEFAULT 0,
                     post_world TEXT,
                     post_x INTEGER,
                     post_y INTEGER,
                     post_z INTEGER,
+                    chest_positions TEXT NOT NULL DEFAULT ''
+                );
+            """;
+
+        // trade_depots: her Trade Depot bloğu için ayrı kayıt (oyuncu başına çoklu destekli)
+        String tradeDepotsTable = """
+                CREATE TABLE IF NOT EXISTS trade_depots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_uuid TEXT NOT NULL,
+                    depot_world TEXT NOT NULL,
+                    depot_x INTEGER NOT NULL,
+                    depot_y INTEGER NOT NULL,
+                    depot_z INTEGER NOT NULL,
                     chest_positions TEXT NOT NULL DEFAULT ''
                 );
             """;
@@ -130,6 +144,38 @@ public class DatabaseManager {
             stmt.execute(marketTransactionsTable);
             stmt.execute(playerShopsTable);
             stmt.execute(playerShopListingsTable);
+            stmt.execute(tradeDepotsTable);
+        }
+
+        // Eski player_shops.chest_positions verisini trade_depots'a taşı (tek seferlik migration)
+        migrateDepotsFromPlayerShops();
+    }
+
+    /**
+     * Eski şemada player_shops'ta saklanan tek depot kaydını
+     * yeni trade_depots tablosuna aktarır (her server başlatmada güvenli çalışır).
+     */
+    private static void migrateDepotsFromPlayerShops() {
+        try {
+            // Taşınacak kayıt var mı kontrol et
+            String migrateSql = """
+                INSERT INTO trade_depots (owner_uuid, depot_world, depot_x, depot_y, depot_z, chest_positions)
+                SELECT p.owner_uuid, p.depot_world, p.depot_x, p.depot_y, p.depot_z, p.chest_positions
+                FROM player_shops p
+                WHERE p.depot_world != 'N/A'
+                  AND p.chest_positions != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trade_depots t
+                      WHERE t.owner_uuid = p.owner_uuid
+                        AND t.depot_x = p.depot_x
+                        AND t.depot_y = p.depot_y
+                        AND t.depot_z = p.depot_z
+                  )
+            """;
+            connection.createStatement().execute(migrateSql);
+        } catch (SQLException e) {
+            // Sütun yoksa veya başka bir sorunsa sessizce atla
+            CogTrade.LOGGER.info("Depot migration atlandı: " + e.getMessage());
         }
     }
 

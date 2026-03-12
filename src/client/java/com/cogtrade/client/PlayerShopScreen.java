@@ -1,6 +1,7 @@
 package com.cogtrade.client;
 
 import com.cogtrade.network.PlayerShopBuyPacket;
+import com.cogtrade.network.PlayerShopRefreshPacket;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
@@ -61,6 +62,7 @@ public class PlayerShopScreen extends Screen {
     private int selectedIndex = -1;
     private int tradeAmount   = 1;
     private int scroll        = 0;
+    private int refreshTick   = 0;
 
     // ── Layout ────────────────────────────────────────────────────────────
     private int panelX, panelY, panelW, panelH;
@@ -74,6 +76,8 @@ public class PlayerShopScreen extends Screen {
     private ButtonWidget    sortButton;
     private ButtonWidget    minusButton;
     private ButtonWidget    plusButton;
+
+    public String getOwnerUuid() { return ownerUuid; }
 
     public PlayerShopScreen(String ownerUuid, String ownerName,
                             List<ClientMarketItem> items, double sellMultiplier) {
@@ -514,8 +518,55 @@ public class PlayerShopScreen extends Screen {
         plusButton.active  = tradeAmount < Math.min(64, item.getStock());
     }
 
+    /**
+     * Sunucudan gelen güncel veriyle ekranı yenile (ekran kapatılmadan).
+     * Seçimi ve scroll pozisyonunu korur.
+     */
+    public void refresh(List<ClientMarketItem> newItems) {
+        // Seçilen itemId ve miktarı koru
+        String prevId = (selectedIndex >= 0 && selectedIndex < displayItems.size())
+                ? displayItems.get(selectedIndex).getItemId() : null;
+        int prevAmount = tradeAmount; // miktar sıfırlanmasın
+
+        allItems.clear();
+        allItems.addAll(newItems);
+
+        // Kategori listesini yeniden oluştur
+        Set<String> catSet = new LinkedHashSet<>();
+        for (ClientMarketItem item : allItems) catSet.add(item.getCategory());
+        categories.clear();
+        categories.add("Tümü");
+        categories.addAll(catSet);
+        if (selectedCategoryIdx >= categories.size()) selectedCategoryIdx = 0;
+
+        applyFilters(); // selectedIndex=-1, tradeAmount=1 sıfırlar
+
+        // Seçimi ve miktarı geri yükle
+        if (prevId != null) {
+            for (int i = 0; i < displayItems.size(); i++) {
+                if (displayItems.get(i).getItemId().equals(prevId)) {
+                    selectedIndex = i;
+                    // Miktarı yeni stoğa göre clamp et
+                    int maxStock = Math.max(1, displayItems.get(i).getStock());
+                    tradeAmount = Math.min(prevAmount, maxStock);
+                    break;
+                }
+            }
+        }
+        updateButtons();
+    }
+
     @Override
-    public void tick() { super.tick(); updateButtons(); }
+    public void tick() {
+        super.tick();
+        updateButtons();
+        if (++refreshTick >= 40) {
+            refreshTick = 0;
+            PacketByteBuf buf = PacketByteBufs.create();
+            buf.writeString(ownerUuid);
+            ClientPlayNetworking.send(PlayerShopRefreshPacket.ID, buf);
+        }
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // Helpers

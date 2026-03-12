@@ -3,6 +3,7 @@ package com.cogtrade.block;
 import com.cogtrade.config.CogTradeConfig;
 import com.cogtrade.market.PlayerShopManager;
 import com.cogtrade.network.OpenPlayerShopPacket;
+import com.cogtrade.network.OpenTradePostManagePacket;
 import net.minecraft.block.*;
 import net.minecraft.block.entity.*;
 import net.minecraft.entity.LivingEntity;
@@ -70,8 +71,7 @@ public class TradePostBlock extends Block implements BlockEntityProvider {
 
         String worldId = world.getRegistryKey().getValue().toString();
         PlayerShopManager.registerPost(uuid, worldId, pos);
-        sp.sendMessage(Text.literal("§a✓ Trade Post yerleştirildi! Pazar açık: §e"
-                + sp.getName().getString() + "'in Pazarı"));
+        sp.sendMessage(Text.literal("§a✓ Trade Post yerleştirildi! Sağ tıklayarak ilanlarını yönetebilirsin."));
     }
 
     @Override
@@ -91,20 +91,35 @@ public class TradePostBlock extends Block implements BlockEntityProvider {
             return ActionResult.FAIL;
         }
 
+        // ── Sahip → Trade Post yönetim ekranı ────────────────────────────
+        if (ownerUuid.equals(sp.getUuid().toString())) {
+            OpenTradePostManagePacket.send(sp, ownerUuid);
+            return ActionResult.SUCCESS;
+        }
+
+        // ── Alıcı → mağaza ekranı ─────────────────────────────────────────
         List<PlayerShopManager.ShopListing> listings = PlayerShopManager.getListings(ownerUuid);
         if (listings.isEmpty()) {
             sp.sendMessage(Text.literal("§e" + post.getOwnerName() + "'in pazarı şu an boş."));
             return ActionResult.SUCCESS;
         }
 
-        // Stok kontrolü: sandıkları tara, stoksuz olanları filtrele
+        // Stok kontrolü: TÜM dünyalardaki sandıkları tara (depotlar farklı boyutlarda olabilir)
         Map<String, Integer> available = new java.util.HashMap<>();
-        if (sp.getServerWorld() != null) {
-            available = PlayerShopManager.scanChestContents(ownerUuid, sp.getServerWorld());
+        if (sp.getServer() != null) {
+            for (net.minecraft.server.world.ServerWorld w : sp.getServer().getWorlds()) {
+                PlayerShopManager.scanChestContents(ownerUuid, w)
+                        .forEach((id, cnt) -> available.merge(id, cnt, Integer::sum));
+            }
             final Map<String, Integer> avail = available;
             listings = listings.stream()
                     .filter(l -> avail.getOrDefault(l.itemId(), 0) > 0)
                     .toList();
+        }
+
+        if (listings.isEmpty()) {
+            sp.sendMessage(Text.literal("§e" + post.getOwnerName() + "'in pazarında stok bulunmuyor."));
+            return ActionResult.SUCCESS;
         }
 
         OpenPlayerShopPacket.send(sp, ownerUuid, post.getOwnerName(), listings, available,

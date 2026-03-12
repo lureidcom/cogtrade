@@ -1,8 +1,10 @@
 package com.cogtrade.market;
 
 import com.cogtrade.database.DatabaseManager;
+import com.cogtrade.network.AllShopListingsPacket;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
@@ -42,22 +44,45 @@ public class PlayerShopManager {
 
     // ── Depot kayıt / güncelleme ───────────────────────────────────────────
 
+    /**
+     * Her çağrıda trade_depots'a YENİ bir satır ekler (çakışma olmaz = çoklu depot desteği).
+     * player_shops'ta sahip kaydını da tutar (post konumu + isim için).
+     */
     public static void registerDepot(String ownerUuid, String ownerName,
                                      String worldId, BlockPos pos,
                                      List<ChestPos> chests) {
         String chestData = serializeChests(chests);
-        String sql = """
+
+        // 1) Bu pozisyona ait eski kayıt varsa güncelle; yoksa yeni ekle
+        String upsertDepot = """
+            INSERT INTO trade_depots (owner_uuid, depot_world, depot_x, depot_y, depot_z, chest_positions)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT DO NOTHING
+        """;
+        // trade_depots'ta UNIQUE kısıt yok; doğrudan INSERT
+        String insertDepot = """
+            INSERT INTO trade_depots (owner_uuid, depot_world, depot_x, depot_y, depot_z, chest_positions)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """;
+        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(insertDepot)) {
+            stmt.setString(1, ownerUuid);
+            stmt.setString(2, worldId);
+            stmt.setInt(3, pos.getX());
+            stmt.setInt(4, pos.getY());
+            stmt.setInt(5, pos.getZ());
+            stmt.setString(6, chestData);
+            stmt.executeUpdate();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        // 2) Sahip kaydını player_shops'a ekle/güncelle (post kaydı için şart)
+        String upsertOwner = """
             INSERT INTO player_shops (owner_uuid, owner_name, depot_world, depot_x, depot_y, depot_z, chest_positions)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(owner_uuid) DO UPDATE SET
-                owner_name = excluded.owner_name,
-                depot_world = excluded.depot_world,
-                depot_x = excluded.depot_x,
-                depot_y = excluded.depot_y,
-                depot_z = excluded.depot_z,
-                chest_positions = excluded.chest_positions
+            ON CONFLICT(owner_uuid) DO UPDATE SET owner_name = excluded.owner_name
         """;
-        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
+        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(upsertOwner)) {
             stmt.setString(1, ownerUuid);
             stmt.setString(2, ownerName);
             stmt.setString(3, worldId);
@@ -71,16 +96,34 @@ public class PlayerShopManager {
         }
     }
 
-    public static void removeDepot(String ownerUuid) {
-        String sql = "DELETE FROM player_shops WHERE owner_uuid = ?";
+    /**
+     * Belirli bir Trade Depot bloğunun kaydını siler.
+     * Oyuncunun başka depotu yoksa ilanları ve post kaydı da temizlenir.
+     */
+    public static void removeDepot(String ownerUuid, BlockPos pos) {
+        String sql = "DELETE FROM trade_depots WHERE owner_uuid = ? AND depot_x = ? AND depot_y = ? AND depot_z = ?";
         try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
             stmt.setString(1, ownerUuid);
+            stmt.setInt(2, pos.getX());
+            stmt.setInt(3, pos.getY());
+            stmt.setInt(4, pos.getZ());
             stmt.executeUpdate();
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        // Listings da temizle
-        removeAllListings(ownerUuid);
+
+        // Son depot da kaldırıldıysa → tüm kayıtları temizle
+        if (!hasDepot(ownerUuid)) {
+            removeAllListings(ownerUuid);
+            removePost(ownerUuid);
+            String deleteShop = "DELETE FROM player_shops WHERE owner_uuid = ?";
+            try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(deleteShop)) {
+                stmt.setString(1, ownerUuid);
+                stmt.executeUpdate();
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     public static void registerPost(String ownerUuid, String worldId, BlockPos pos) {
@@ -107,8 +150,9 @@ public class PlayerShopManager {
         }
     }
 
+    /** Oyuncunun en az bir kayıtlı Trade Depot'u olup olmadığını kontrol eder. */
     public static boolean hasDepot(String ownerUuid) {
-        String sql = "SELECT 1 FROM player_shops WHERE owner_uuid = ?";
+        String sql = "SELECT 1 FROM trade_depots WHERE owner_uuid = ? LIMIT 1";
         try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
             stmt.setString(1, ownerUuid);
             return stmt.executeQuery().next();
@@ -118,16 +162,23 @@ public class PlayerShopManager {
         }
     }
 
+    /**
+     * Oyuncuya ait TÜM Trade Depot'lardan sandık konumlarını toplar.
+     * Her depot ayrı satırda tutulur; hepsi birleştirilir.
+     */
     public static List<ChestPos> getChests(String ownerUuid) {
-        String sql = "SELECT chest_positions FROM player_shops WHERE owner_uuid = ?";
+        String sql = "SELECT chest_positions FROM trade_depots WHERE owner_uuid = ?";
+        List<ChestPos> all = new ArrayList<>();
         try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
             stmt.setString(1, ownerUuid);
             ResultSet rs = stmt.executeQuery();
-            if (rs.next()) return deserializeChests(rs.getString("chest_positions"));
+            while (rs.next()) {
+                all.addAll(deserializeChests(rs.getString("chest_positions")));
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        return new ArrayList<>();
+        return all;
     }
 
     public static String getOwnerName(String ownerUuid) {
@@ -155,6 +206,15 @@ public class PlayerShopManager {
         for (ChestPos cp : chests) {
             if (!cp.world().equals(world.getRegistryKey().getValue().toString())) continue;
             BlockPos pos = cp.toBlockPos();
+
+            // Chunk yüklü değilse zorla yükle (market taraması için gerekli)
+            int chunkX = pos.getX() >> 4;
+            int chunkZ = pos.getZ() >> 4;
+            if (!world.isChunkLoaded(chunkX, chunkZ)) {
+                world.getChunk(chunkX, chunkZ,
+                        net.minecraft.world.chunk.ChunkStatus.FULL, true);
+            }
+
             if (!(world.getBlockEntity(pos) instanceof net.minecraft.block.entity.ChestBlockEntity chest)) continue;
 
             for (int i = 0; i < chest.size(); i++) {
@@ -213,10 +273,13 @@ public class PlayerShopManager {
             ResultSet rs = check.executeQuery();
             if (rs.next()) {
                 int id = rs.getInt("id");
-                String updateSql = "UPDATE player_shop_listings SET price = ?, enabled = 1 WHERE id = ?";
+                // Fiyat, kategori ve görünen adı güncelle
+                String updateSql = "UPDATE player_shop_listings SET price = ?, category = ?, display_name = ?, enabled = 1 WHERE id = ?";
                 try (PreparedStatement upd = DatabaseManager.getConnection().prepareStatement(updateSql)) {
                     upd.setDouble(1, price);
-                    upd.setInt(2, id);
+                    upd.setString(2, category);
+                    upd.setString(3, displayName);
+                    upd.setInt(4, id);
                     upd.executeUpdate();
                 }
                 return true;
@@ -310,5 +373,87 @@ public class PlayerShopManager {
             if (cp != null) list.add(cp);
         }
         return list;
+    }
+
+    // ── Trade Post konumu ─────────────────────────────────────────────────
+
+    /** Trade Post bloğunun DB'deki konumunu döner; yoksa null. */
+    public static BlockPos getPostPos(String ownerUuid) {
+        String sql = "SELECT post_x, post_y, post_z FROM player_shops WHERE owner_uuid = ? AND post_x IS NOT NULL";
+        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, ownerUuid);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                return new BlockPos(rs.getInt("post_x"), rs.getInt("post_y"), rs.getInt("post_z"));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    /** Trade Post'un kayıtlı dünya ID'sini döner; yoksa null. */
+    public static String getPostWorld(String ownerUuid) {
+        String sql = "SELECT post_world FROM player_shops WHERE owner_uuid = ? AND post_world IS NOT NULL";
+        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
+            stmt.setString(1, ownerUuid);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) return rs.getString("post_world");
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    // ── Tüm oyuncu mağaza ilanları (Global Market için) ────────────────────
+
+    /**
+     * Trade Post'u olan tüm oyuncuların aktif ilanlarını döner.
+     * Her ilan için gerçek sandık stoğu hesaplanır.
+     */
+    public static List<AllShopListingsPacket.Entry> getAllListingsWithInfo(MinecraftServer server) {
+        List<AllShopListingsPacket.Entry> result = new ArrayList<>();
+        // chest_positions artık trade_depots'ta — SQL'den kaldırıldı
+        String sql = """
+            SELECT l.owner_uuid, s.owner_name, l.item_id, l.display_name, l.category, l.price,
+                   s.post_world
+            FROM player_shop_listings l
+            JOIN player_shops s ON l.owner_uuid = s.owner_uuid
+            WHERE l.enabled = 1 AND s.post_x IS NOT NULL
+        """;
+        try (PreparedStatement stmt = DatabaseManager.getConnection().prepareStatement(sql)) {
+            ResultSet rs = stmt.executeQuery();
+            // Her satıcı için tüm dünyalardaki sandık taramasını bir kez yap
+            Map<String, Map<String, Integer>> ownerStockCache = new HashMap<>();
+            while (rs.next()) {
+                String ownerUuid = rs.getString("owner_uuid");
+                String ownerName = rs.getString("owner_name");
+                String itemId    = rs.getString("item_id");
+                String dispName  = rs.getString("display_name");
+                String category  = rs.getString("category");
+                double price     = rs.getDouble("price");
+
+                // Sandık taraması — tüm dünyaları tara (depotlar farklı boyutlarda olabilir)
+                Map<String, Integer> stockMap = ownerStockCache.get(ownerUuid);
+                if (stockMap == null && server != null) {
+                    Map<String, Integer> combined = new HashMap<>();
+                    for (ServerWorld w : server.getWorlds()) {
+                        scanChestContents(ownerUuid, w)
+                                .forEach((id, cnt) -> combined.merge(id, cnt, Integer::sum));
+                    }
+                    stockMap = combined;
+                    ownerStockCache.put(ownerUuid, stockMap);
+                }
+
+                int stock = 0;
+                if (stockMap != null) stock = stockMap.getOrDefault(itemId, 0);
+
+                result.add(new AllShopListingsPacket.Entry(
+                        ownerUuid, ownerName, itemId, dispName, category, price, stock));
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return result;
     }
 }

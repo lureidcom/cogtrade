@@ -185,20 +185,48 @@ public class CogTrade implements ModInitializer {
             String uuid = sp.getUuid().toString();
             String worldId = world.getRegistryKey().getValue().toString();
 
-            // Geçici sandık listesini player NBT'sinde değil, sunucu-taraflı bir Map'te tut
+            // Geçici sandık listesini sunucu-taraflı Map'te tut
             List<PlayerShopManager.ChestPos> current = pendingChests.computeIfAbsent(uuid, k -> new ArrayList<>());
-            PlayerShopManager.ChestPos cp = PlayerShopManager.ChestPos.of(worldId, pos);
 
-            boolean removed = current.removeIf(c -> c.x() == pos.getX() && c.y() == pos.getY() && c.z() == pos.getZ());
+            // Çift sandık tespiti: tıklanan sandığın diğer yarısını bul
+            net.minecraft.block.BlockState chestState = world.getBlockState(pos);
+            List<net.minecraft.util.math.BlockPos> toToggle = new ArrayList<>();
+            toToggle.add(pos);
+            if (chestState.getBlock() instanceof net.minecraft.block.ChestBlock) {
+                net.minecraft.block.enums.ChestType chestType =
+                        chestState.get(net.minecraft.block.ChestBlock.CHEST_TYPE);
+                if (chestType != net.minecraft.block.enums.ChestType.SINGLE) {
+                    // getDirectionToAttached private olduğu için manuel hesaplıyoruz:
+                    // LEFT  → facing.rotateYClockwise()
+                    // RIGHT → facing.rotateYCounterclockwise()
+                    net.minecraft.util.math.Direction facing =
+                            chestState.get(net.minecraft.block.HorizontalFacingBlock.FACING);
+                    net.minecraft.util.math.Direction dir =
+                            (chestType == net.minecraft.block.enums.ChestType.LEFT)
+                                    ? facing.rotateYClockwise()
+                                    : facing.rotateYCounterclockwise();
+                    net.minecraft.util.math.BlockPos otherPos = pos.offset(dir);
+                    if (world.getBlockEntity(otherPos) instanceof ChestBlockEntity) {
+                        toToggle.add(otherPos);
+                    }
+                }
+            }
+
+            // Tüm yarıları aynı anda ekle / kaldır
+            boolean removed = current.removeIf(c ->
+                    toToggle.stream().anyMatch(p -> c.x() == p.getX() && c.y() == p.getY() && c.z() == p.getZ()));
             if (!removed) {
-                current.add(cp);
+                for (net.minecraft.util.math.BlockPos p : toToggle) {
+                    current.add(PlayerShopManager.ChestPos.of(worldId, p));
+                }
             }
 
             boolean added = !removed;
-            ChestSelectedPacket.send(sp, pos, added, current.size());
+            String doubleNote = toToggle.size() > 1 ? " §8(çift sandık)" : "";
+            ChestSelectedPacket.sendAll(sp, current, worldId);
             sp.sendMessage(Text.literal(added
-                    ? "§a✓ Sandık eklendi (" + current.size() + " sandık seçili). Trade Depot'u yerleştir."
-                    : "§e✗ Sandık kaldırıldı (" + current.size() + " sandık seçili)."));
+                    ? "§a✓ Sandık eklendi" + doubleNote + " §7(" + current.size() + " sandık seçili). Trade Depot'u yerleştir."
+                    : "§e✗ Sandık kaldırıldı" + doubleNote + " §7(" + current.size() + " sandık seçili)."));
 
             return ActionResult.SUCCESS; // sandık GUI'si açılmasın
         });
@@ -365,29 +393,140 @@ public class CogTrade implements ModInitializer {
                     });
                 });
 
-        // ── Locate paketi ─────────────────────────────────────────────────
+        // ── Locate paketi (tüm yüklü chunklar) ───────────────────────────
         ServerPlayNetworking.registerGlobalReceiver(
                 com.cogtrade.network.LocateRequestPacket.ID,
                 (server, player, handler, buf, responseSender) -> {
                     server.execute(() -> {
-                        net.minecraft.util.math.BlockPos center = player.getBlockPos();
-                        int radius = 50;
+                        net.minecraft.server.world.ServerWorld serverWorld = player.getServerWorld();
+                        net.minecraft.util.math.BlockPos playerPos = player.getBlockPos();
+                        int playerCX = playerPos.getX() >> 4;
+                        int playerCZ = playerPos.getZ() >> 4;
+                        int chunkRadius = 32;
+
                         net.minecraft.util.math.BlockPos nearest = null;
                         double nearestDistSq = Double.MAX_VALUE;
-                        for (int dx = -radius; dx <= radius; dx++) {
-                            for (int dy = -radius; dy <= radius; dy++) {
-                                for (int dz = -radius; dz <= radius; dz++) {
-                                    net.minecraft.util.math.BlockPos pos = center.add(dx, dy, dz);
-                                    if (player.getWorld().getBlockState(pos).getBlock() == MarketBlock.INSTANCE) {
-                                        double dist = center.getSquaredDistance(pos);
-                                        if (dist < nearestDistSq) { nearestDistSq = dist; nearest = pos.toImmutable(); }
+
+                        for (int cx = playerCX - chunkRadius; cx <= playerCX + chunkRadius; cx++) {
+                            for (int cz = playerCZ - chunkRadius; cz <= playerCZ + chunkRadius; cz++) {
+                                net.minecraft.world.chunk.WorldChunk chunk =
+                                        serverWorld.getChunkManager().getWorldChunk(cx, cz);
+                                if (chunk == null) continue;
+                                for (Map.Entry<net.minecraft.util.math.BlockPos,
+                                        net.minecraft.block.entity.BlockEntity> entry :
+                                        chunk.getBlockEntities().entrySet()) {
+                                    if (entry.getValue() instanceof MarketBlockEntity) {
+                                        net.minecraft.util.math.BlockPos pos = entry.getKey();
+                                        double dist = playerPos.getSquaredDistance(pos);
+                                        if (dist < nearestDistSq) {
+                                            nearestDistSq = dist;
+                                            nearest = pos.toImmutable();
+                                        }
                                     }
                                 }
                             }
                         }
+
                         com.cogtrade.network.LocateMarketPacket.send(player, nearest);
-                        if (nearest == null) player.sendMessage(Text.literal("§c50 blok içinde Market Bloğu bulunamadı."));
-                        else { final net.minecraft.util.math.BlockPos found = nearest; player.sendMessage(Text.literal("§a⬡ Market Bloğu bulundu: §e" + found.getX() + ", " + found.getY() + ", " + found.getZ() + " §7(30 sn outline)")); }
+                        if (nearest == null) {
+                            player.sendMessage(Text.literal("§cYüklü chunklar içinde Market Bloğu bulunamadı."));
+                        } else {
+                            final net.minecraft.util.math.BlockPos found = nearest;
+                            player.sendMessage(Text.literal("§a⬡ Market Bloğu bulundu: §e"
+                                    + found.getX() + ", " + found.getY() + ", " + found.getZ()
+                                    + " §7(60 sn outline)"));
+                        }
+                    });
+                });
+
+        // ── Depot yenile ──────────────────────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.DepotRefreshPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    server.execute(() -> OpenDepotPacket.send(player, player.getUuid().toString()));
+                });
+
+        // ── Tüm oyuncu mağaza ilanlarını gönder ───────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.RequestAllShopListingsPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    server.execute(() -> {
+                        List<AllShopListingsPacket.Entry> entries =
+                                PlayerShopManager.getAllListingsWithInfo(server);
+                        AllShopListingsPacket.send(player, entries);
+                    });
+                });
+
+        // ── Trade Post konumunu bul ve gönder ─────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.RequestLocateTradePostPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String ownerUuid = buf.readString();
+                    server.execute(() -> {
+                        net.minecraft.util.math.BlockPos pos = PlayerShopManager.getPostPos(ownerUuid);
+                        com.cogtrade.network.LocateTradePostPacket.send(player, pos);
+                        if (pos == null) {
+                            player.sendMessage(Text.literal("§cBu satıcının Trade Post'u bulunamadı."));
+                        } else {
+                            player.sendMessage(Text.literal("§b⬡ Trade Post bulundu: §e"
+                                    + pos.getX() + ", " + pos.getY() + ", " + pos.getZ()
+                                    + " §7(60 sn outline)"));
+                        }
+                    });
+                });
+
+        // ── Trade Post: ilan ekle / kaldır (sahip) ────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.PostActionPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    int    action   = buf.readInt();
+                    String itemId   = buf.readString();
+                    double price    = buf.readDouble();
+                    String category = buf.readString();
+                    server.execute(() -> {
+                        String uuid = player.getUuid().toString();
+                        if (action == com.cogtrade.network.PostActionPacket.ACTION_ADD) {
+                            net.minecraft.item.Item mcItem =
+                                    Registries.ITEM.get(new Identifier(itemId));
+                            String displayName = mcItem.getDefaultStack().getName().getString();
+                            PlayerShopManager.addListing(uuid, itemId, displayName, category, price);
+                        } else {
+                            PlayerShopManager.removeListing(uuid, itemId);
+                        }
+                        // Güncel Trade Post yönetim verisini gönder
+                        com.cogtrade.network.OpenTradePostManagePacket.send(player, uuid);
+                    });
+                });
+
+        // ── Trade Post yönetim ekranını yenile (sahip) ────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.PostRefreshPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    server.execute(() ->
+                            com.cogtrade.network.OpenTradePostManagePacket.send(
+                                    player, player.getUuid().toString()));
+                });
+
+        // ── PlayerShop ekranını yenile (alıcı) ───────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.PlayerShopRefreshPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String ownerUuid = buf.readString();
+                    server.execute(() -> {
+                        List<PlayerShopManager.ShopListing> listings =
+                                PlayerShopManager.getListings(ownerUuid);
+                        if (listings.isEmpty()) return;
+
+                        java.util.Map<String, Integer> available =
+                                PlayerShopManager.scanChestContents(ownerUuid, player.getServerWorld());
+                        final java.util.Map<String, Integer> avail = available;
+                        listings = listings.stream()
+                                .filter(l -> avail.getOrDefault(l.itemId(), 0) > 0)
+                                .toList();
+
+                        String ownerName = PlayerShopManager.getOwnerName(ownerUuid);
+                        OpenPlayerShopPacket.send(player, ownerUuid, ownerName, listings,
+                                available, com.cogtrade.config.CogTradeConfig.get().sellPriceMultiplier);
                     });
                 });
 

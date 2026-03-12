@@ -2,6 +2,7 @@ package com.cogtrade.client;
 
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -16,12 +17,13 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.Deque;
-import java.util.List;
-import java.util.Locale;
-import java.util.Set;
+import com.cogtrade.network.AllShopListingsPacket;
+import com.cogtrade.network.RequestAllShopListingsPacket;
+import com.cogtrade.network.RequestLocateTradePostPacket;
+import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
+import net.minecraft.network.PacketByteBuf;
+
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Environment(EnvType.CLIENT)
@@ -131,6 +133,24 @@ public class MarketScreen extends Screen {
 
     private int lastSelectedFilteredIndex = -1;
 
+    // ── Oyuncu Pazarı (Player Market) ───────────────────────────────────────
+    private static final String PLAYER_MARKET_CATEGORY = "🏪 Oyuncu Pazarı";
+    private static final int C_CYAN    = 0xFF26C6DA;
+    private static final int C_CYAN_BG = 0xFF0D2B35;
+    private static final int C_CYAN_HL = 0xFF1A4A5A;
+    private List<AllShopListingsPacket.Entry> playerShopEntries = new ArrayList<>();
+    private Map<String, List<AllShopListingsPacket.Entry>> shopByItem = new LinkedHashMap<>();
+    private List<String> shopItemIds = new ArrayList<>();       // filtered unique ids
+    private boolean playerShopLoaded = false;
+    private boolean playerShopLoading = false;
+    private int shopRefreshTick = 0;           // periyodik yenileme sayacı
+    private String selectedShopItemId = null;
+    private int selectedShopSellerIdx = -1;
+    private int shopGridScroll = 0;
+    private int shopSellerScroll = 0;
+    private int shopTradeAmount = 1;
+    private ButtonWidget locatePostButton;
+
     public MarketScreen(List<ClientMarketItem> items, boolean canBuy, double sellPriceMultiplier) {
         super(Text.literal("Sunucu Pazarı"));
         this.allItems = items;
@@ -145,16 +165,16 @@ public class MarketScreen extends Screen {
 
         searchField = new TextFieldWidget(
                 textRenderer,
-                catX + 5, catY + 5,
-                catW - 10, 16,
+                gridX + 90, panelY + 3,
+                gridW - 94, 16,
                 Text.literal("")
         );
         searchField.setMaxLength(48);
-        searchField.setSuggestion("Ara... (örn: diamond price<1000 inv>0 fav)");
+        searchField.setSuggestion("Ara...");
         searchField.setText(searchQuery);
         searchField.setChangedListener(text -> {
             searchQuery = text;
-            searchField.setSuggestion(text.isEmpty() ? "Ara... (örn: diamond price<1000 inv>0 fav)" : "");
+            searchField.setSuggestion(text.isEmpty() ? "Ara..." : "");
             selectedItemIndex = -1;
             gridScrollOffset = 0;
             tradeAmount = 1;
@@ -198,6 +218,15 @@ public class MarketScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(Text.literal("✕"), btn -> close())
                 .dimensions(panelX + panelW - 17, panelY + 4, 13, 13)
                 .build());
+
+        // Oyuncu Pazarı — sadece Konumlandır butonu (Market'ten satın alma kaldırıldı)
+        locatePostButton = ButtonWidget.builder(
+                Text.literal("§e⊕ Trade Post'u Bul"),
+                btn -> handleLocatePost())
+                .dimensions(buttonBaseX, footerY + 30, buttonW, 20).build();
+        locatePostButton.setTooltip(Tooltip.of(Text.literal(
+                "Seçili satıcının Trade Post'unu dünyada işaretle ve oradan satın al")));
+        addDrawableChild(locatePostButton);
 
         filterItems();
         updateActionButtons();
@@ -244,6 +273,13 @@ public class MarketScreen extends Screen {
         updateActionButtons();
     }
 
+    private boolean isPlayerMarketSelected() {
+        return !categories.isEmpty()
+                && selectedCategoryIndex >= 0
+                && selectedCategoryIndex < categories.size()
+                && categories.get(selectedCategoryIndex).equals(PLAYER_MARKET_CATEGORY);
+    }
+
     private void rebuildCategories() {
         List<String> base = allItems.stream()
                 .map(ClientMarketItem::getCategory)
@@ -252,6 +288,9 @@ public class MarketScreen extends Screen {
                 .collect(Collectors.toCollection(ArrayList::new));
 
         categories = new ArrayList<>();
+
+        // Oyuncu Pazarı her zaman ilk kategori olarak eklenir
+        categories.add(PLAYER_MARKET_CATEGORY);
 
         if (!MarketUiState.getFavorites().isEmpty()) {
             categories.add(FAVORITES_CATEGORY);
@@ -290,6 +329,13 @@ public class MarketScreen extends Screen {
     private void filterItems() {
         if (categories.isEmpty()) {
             filteredItems = new ArrayList<>();
+            return;
+        }
+
+        // Oyuncu Pazarı seçiliyse ayrı filtre
+        if (isPlayerMarketSelected()) {
+            filterShopItems();
+            filteredItems = new ArrayList<>(); // normal grid boş
             return;
         }
 
@@ -474,6 +520,31 @@ public class MarketScreen extends Screen {
     }
 
     private void updateActionButtons() {
+        boolean isPlayerMarket = isPlayerMarketSelected();
+
+        // Oyuncu Pazarı modu
+        if (isPlayerMarket) {
+            buyButton.visible = false;
+            buyButton.active  = false;
+            sellButton.visible = false;
+            sellButton.active  = false;
+            locateButton.visible = false;
+            locateButton.active  = false;
+
+            boolean hasSeller = selectedShopSellerIdx >= 0
+                    && selectedShopItemId != null
+                    && shopByItem.containsKey(selectedShopItemId)
+                    && selectedShopSellerIdx < shopByItem.get(selectedShopItemId).size();
+
+            locatePostButton.visible = true;
+            locatePostButton.active  = hasSeller;
+            return;
+        }
+
+        // Normal mod: oyuncu-pazar butonunu gizle
+        locatePostButton.visible = false;
+        locatePostButton.active  = false;
+
         boolean hasSelection = selectedItemIndex >= 0 && selectedItemIndex < filteredItems.size();
 
         if (!canBuy) {
@@ -505,6 +576,65 @@ public class MarketScreen extends Screen {
         sellButton.active = inv > 0;
     }
 
+    // ── Oyuncu Pazarı veri metotları ─────────────────────────────────────────
+
+    /** Sunucudan gelen tüm oyuncu mağaza verilerini güncelle */
+    public void updatePlayerShopData(List<AllShopListingsPacket.Entry> entries) {
+        playerShopEntries = new ArrayList<>(entries);
+        playerShopLoaded  = true;
+        playerShopLoading = false;
+        buildShopByItem();
+        if (isPlayerMarketSelected()) filterShopItems();
+    }
+
+    private void buildShopByItem() {
+        shopByItem.clear();
+        for (AllShopListingsPacket.Entry e : playerShopEntries) {
+            // Stoksuz ilanları da göster (gri görünüm); satın alma sunucu tarafında kontrol edilir
+            shopByItem.computeIfAbsent(e.itemId(), k -> new ArrayList<>()).add(e);
+        }
+        // Her item için satıcıları: stoklu olanlar önce, sonra fiyata göre
+        shopByItem.values().forEach(list ->
+                list.sort(Comparator.comparingInt((AllShopListingsPacket.Entry e) -> e.stock() > 0 ? 0 : 1)
+                        .thenComparingDouble(AllShopListingsPacket.Entry::price)));
+    }
+
+    private void filterShopItems() {
+        String q = searchQuery.trim().toLowerCase(Locale.ROOT);
+        shopItemIds = shopByItem.keySet().stream()
+                .filter(id -> q.isEmpty()
+                        || getItemDisplayName(id).toLowerCase(Locale.ROOT).contains(q))
+                .sorted(Comparator.comparing(this::getItemDisplayName))
+                .collect(Collectors.toCollection(ArrayList::new));
+        shopGridScroll = 0;
+        // Seçimi koru eğer hala geçerliyse
+        if (selectedShopItemId != null && !shopItemIds.contains(selectedShopItemId)) {
+            selectedShopItemId   = null;
+            selectedShopSellerIdx = -1;
+        }
+    }
+
+    private String getItemDisplayName(String itemId) {
+        try {
+            net.minecraft.item.Item item = Registries.ITEM.get(new Identifier(itemId));
+            if (item == Items.AIR) return itemId;
+            String n = item.getDefaultStack().getName().getString();
+            return n.isBlank() ? itemId : n;
+        } catch (Exception e) { return itemId; }
+    }
+
+    private void handleLocatePost() {
+        if (selectedShopItemId == null || selectedShopSellerIdx < 0) return;
+        List<AllShopListingsPacket.Entry> sellers = shopByItem.get(selectedShopItemId);
+        if (sellers == null || selectedShopSellerIdx >= sellers.size()) return;
+        AllShopListingsPacket.Entry seller = sellers.get(selectedShopSellerIdx);
+
+        PacketByteBuf buf = PacketByteBufs.create();
+        buf.writeString(seller.ownerUuid());
+        ClientPlayNetworking.send(RequestLocateTradePostPacket.ID, buf);
+        close();
+    }
+
     @Override
     public void tick() {
         super.tick();
@@ -528,6 +658,17 @@ public class MarketScreen extends Screen {
                 flashText = "";
                 flashItemId = -1;
             }
+        }
+
+        // Oyuncu Pazarı periyodik otomatik yenileme (her ~10 saniye)
+        if (isPlayerMarketSelected() && playerShopLoaded) {
+            if (++shopRefreshTick >= 200) {
+                shopRefreshTick = 0;
+                PacketByteBuf buf = PacketByteBufs.create();
+                ClientPlayNetworking.send(RequestAllShopListingsPacket.ID, buf);
+            }
+        } else {
+            shopRefreshTick = 0;
         }
 
         updateActionButtons();
@@ -555,13 +696,18 @@ public class MarketScreen extends Screen {
         drawFrame(ctx, panelX, panelY, panelW, panelH);
         drawHeader(ctx);
         drawCategoryPanel(ctx, mouseX, mouseY);
-        drawGrid(ctx, mouseX, mouseY);
-        drawDetailPanel(ctx, mouseX, mouseY);
+
+        if (isPlayerMarketSelected()) {
+            drawPlayerMarketGrid(ctx, mouseX, mouseY);
+            drawPlayerMarketDetail(ctx, mouseX, mouseY);
+        } else {
+            drawGrid(ctx, mouseX, mouseY);
+            drawDetailPanel(ctx, mouseX, mouseY);
+            drawGridTooltip(ctx, mouseX, mouseY);
+        }
+
         drawFooterPanel(ctx);
-
         super.render(ctx, mouseX, mouseY, delta);
-
-        drawGridTooltip(ctx, mouseX, mouseY);
     }
 
     private void drawFrame(DrawContext ctx, int x, int y, int w, int h) {
@@ -593,12 +739,9 @@ public class MarketScreen extends Screen {
     private void drawCategoryPanel(DrawContext ctx, int mouseX, int mouseY) {
         drawSection(ctx, catX, catY, catW, catH);
 
-        ctx.fill(catX + 3, catY + 3, catX + catW - 3, catY + 25, 0xFF202020);
-        ctx.fill(catX + 3, catY + 25, catX + catW - 3, catY + 26, C_SEPARATOR);
-
-        int listStartY = catY + 30;
+        int listStartY = catY + 4;
         int rowH = 22;
-        int maxRows = Math.max(1, (catH - 34) / rowH);
+        int maxRows = Math.max(1, (catH - 8) / rowH);
 
         for (int i = 0; i < categories.size() && i < maxRows; i++) {
             int rowY = listStartY + i * rowH;
@@ -953,6 +1096,9 @@ public class MarketScreen extends Screen {
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0) {
+            // Önce Oyuncu Pazarı tıklamalarını işle
+            if (handlePlayerMarketClick(mx, my)) return true;
+
             boolean clickedSearch = inBounds(mx, my, catX + 5, catY + 5, catW - 10, 16);
             searchField.setFocused(clickedSearch);
             if (clickedSearch) {
@@ -961,14 +1107,20 @@ public class MarketScreen extends Screen {
                 setFocused(null);
             }
 
-            int listStartY = catY + 30;
+            int listStartY = catY + 4;
             int rowH = 22;
-            int maxRows = Math.max(1, (catH - 34) / rowH);
+            int maxRows = Math.max(1, (catH - 8) / rowH);
             for (int i = 0; i < categories.size() && i < maxRows; i++) {
                 int rowY = listStartY + i * rowH;
                 if (inBounds(mx, my, catX + 3, rowY, catW - 6, rowH - 2)) {
                     selectedCategoryIndex = i;
                     filterItems();
+                    // Oyuncu Pazarı seçildiyse veri yoksa yükle
+                    if (isPlayerMarketSelected() && !playerShopLoaded && !playerShopLoading) {
+                        playerShopLoading = true;
+                        PacketByteBuf buf = PacketByteBufs.create();
+                        ClientPlayNetworking.send(RequestAllShopListingsPacket.ID, buf);
+                    }
                     updateActionButtons();
                     return true;
                 }
@@ -1107,6 +1259,30 @@ public class MarketScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mx, double my, double amount) {
+        if (isPlayerMarketSelected()) {
+            if (inBounds(mx, my, gridX, gridY, gridW, gridH)) {
+                int totalCols = Math.max(1, (gridW - 8) / (SLOT_SIZE + SLOT_GAP));
+                int totalRows = (int) Math.ceil((double) shopItemIds.size() / totalCols);
+                int visRows   = Math.max(1, (gridH - 8) / (SLOT_SIZE + SLOT_GAP));
+                int maxScroll = Math.max(0, totalRows - visRows);
+                shopGridScroll = Math.max(0, Math.min(shopGridScroll - (int) amount, maxScroll));
+                return true;
+            }
+            // Satıcı listesi kaydırma
+            if (selectedShopItemId != null && inBounds(mx, my, detailX, detailY, detailW, detailH)) {
+                List<AllShopListingsPacket.Entry> sellers = shopByItem.get(selectedShopItemId);
+                if (sellers != null) {
+                    int listH = detailH - 100;
+                    int rowH  = 18;
+                    int visSelRows = Math.max(1, listH / rowH);
+                    int maxSel = Math.max(0, sellers.size() - visSelRows);
+                    shopSellerScroll = Math.max(0, Math.min(shopSellerScroll - (int) amount, maxSel));
+                    return true;
+                }
+            }
+            return super.mouseScrolled(mx, my, amount);
+        }
+
         if (inBounds(mx, my, gridX, gridY, gridW, gridH)) {
             int totalRows = (int) Math.ceil((double) filteredItems.size() / gridCols);
             int maxScroll = Math.max(0, totalRows - gridRows);
@@ -1393,6 +1569,282 @@ public class MarketScreen extends Screen {
         if (price >= 1_000_000) return String.format("%.1fM", price / 1_000_000);
         if (price >= 1_000) return String.format("%.1fK", price / 1_000);
         return String.format("%.0f", price);
+    }
+
+    // ── Oyuncu Pazarı Grid Çizimi ─────────────────────────────────────────────
+    private void drawPlayerMarketGrid(DrawContext ctx, int mouseX, int mouseY) {
+        drawSection(ctx, gridX, gridY, gridW, gridH);
+
+        if (!playerShopLoaded) {
+            if (!playerShopLoading) {
+                playerShopLoading = true;
+                PacketByteBuf buf = PacketByteBufs.create();
+                ClientPlayNetworking.send(RequestAllShopListingsPacket.ID, buf);
+            }
+            ctx.drawCenteredTextWithShadow(textRenderer, "§7Veriler yükleniyor...",
+                    gridX + gridW / 2, gridY + gridH / 2 - 4, C_SUBTEXT);
+            return;
+        }
+
+        if (shopItemIds.isEmpty()) {
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    searchQuery.isBlank() ? "§7Aktif trade post ilanı yok" : "§7Sonuç bulunamadı",
+                    gridX + gridW / 2, gridY + gridH / 2 - 4, C_SUBTEXT);
+            return;
+        }
+
+        int startX = gridX + 4;
+        int startY = gridY + 4;
+        int totalCols = Math.max(1, (gridW - 8) / (SLOT_SIZE + SLOT_GAP));
+        int totalRows = (int) Math.ceil((double) shopItemIds.size() / totalCols);
+        int visRows   = Math.max(1, (gridH - 8) / (SLOT_SIZE + SLOT_GAP));
+        int maxScroll = Math.max(0, totalRows - visRows);
+        shopGridScroll = Math.max(0, Math.min(shopGridScroll, maxScroll));
+
+        for (int row = 0; row < visRows; row++) {
+            int absRow = row + shopGridScroll;
+            for (int col = 0; col < totalCols; col++) {
+                int idx = absRow * totalCols + col;
+                if (idx >= shopItemIds.size()) break;
+
+                String itemId = shopItemIds.get(idx);
+                List<AllShopListingsPacket.Entry> sellers = shopByItem.get(itemId);
+                int sellerCount = sellers != null ? sellers.size() : 0;
+                int totalStock  = sellers != null
+                        ? sellers.stream().mapToInt(AllShopListingsPacket.Entry::stock).sum() : 0;
+                double minPrice = sellers != null
+                        ? sellers.stream().filter(e -> e.stock() > 0)
+                                .mapToDouble(AllShopListingsPacket.Entry::price).min()
+                                .orElse(sellers.stream().mapToDouble(AllShopListingsPacket.Entry::price).min().orElse(0)) : 0;
+                boolean outOfStock = totalStock <= 0;
+
+                int sx = startX + col * (SLOT_SIZE + SLOT_GAP);
+                int sy = startY + row * (SLOT_SIZE + SLOT_GAP);
+
+                boolean hov = inBounds(mouseX, mouseY, sx, sy, SLOT_SIZE, SLOT_SIZE);
+                boolean sel = itemId.equals(selectedShopItemId);
+
+                int bgCol = sel ? C_SLOT_SELECT : hov ? C_SLOT_HOVER : C_SLOT;
+                ctx.fill(sx, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, C_SLOT_BORDER);
+                ctx.fill(sx + 1, sy + 1, sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, bgCol);
+
+                // Item icon (soluk stok yoksa)
+                ItemStack stack = getItemStack(itemId);
+                if (!stack.isEmpty()) {
+                    ctx.drawItem(stack, sx + 10, sy + 8);
+                    ctx.drawItemInSlot(textRenderer, stack, sx + 10, sy + 8);
+                }
+                // Stok yok → gri kaplama
+                if (outOfStock) {
+                    ctx.fill(sx + 1, sy + 1, sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, 0x99000000);
+                    ctx.drawCenteredTextWithShadow(textRenderer, "§7✕",
+                            sx + SLOT_SIZE / 2, sy + SLOT_SIZE / 2 - 3, 0xFF666666);
+                }
+
+                // Satıcı sayısı badge
+                String badge = sellerCount + "x";
+                int bw = textRenderer.getWidth(badge);
+                ctx.fill(sx + SLOT_SIZE - bw - 3, sy + SLOT_SIZE - 9,
+                        sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, 0xAA000000);
+                ctx.drawText(textRenderer, badge,
+                        sx + SLOT_SIZE - bw - 2, sy + SLOT_SIZE - 8,
+                        outOfStock ? 0xFF666666 : C_CYAN, false);
+
+                // Min fiyat (üst-sol küçük)
+                String priceStr = "⬡" + formatPrice(minPrice);
+                if (textRenderer.getWidth(priceStr) <= SLOT_SIZE - 2) {
+                    ctx.fill(sx + 1, sy + 1, sx + textRenderer.getWidth(priceStr) + 2, sy + 8, 0xAA000000);
+                    ctx.drawText(textRenderer, priceStr, sx + 2, sy + 1,
+                            outOfStock ? 0xFF666666 : C_GOLD, false);
+                }
+
+                // Seçim çerçevesi
+                if (sel) {
+                    int frameCol = outOfStock ? 0xFF666666 : C_CYAN;
+                    ctx.fill(sx, sy, sx + SLOT_SIZE, sy + 1, frameCol);
+                    ctx.fill(sx, sy + SLOT_SIZE - 1, sx + SLOT_SIZE, sy + SLOT_SIZE, frameCol);
+                    ctx.fill(sx, sy, sx + 1, sy + SLOT_SIZE, frameCol);
+                    ctx.fill(sx + SLOT_SIZE - 1, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, frameCol);
+                }
+            }
+        }
+
+        // Scrollbar
+        if (maxScroll > 0) {
+            int sbX = gridX + gridW - 6;
+            int sbH = gridH - 8;
+            int sbY = gridY + 4;
+            int barH = Math.max(20, sbH * visRows / totalRows);
+            int barY = sbY + shopGridScroll * (sbH - barH) / maxScroll;
+            ctx.fill(sbX, sbY, sbX + 3, sbY + sbH, 0xFF222222);
+            ctx.fill(sbX, barY, sbX + 3, barY + barH, C_SEPARATOR);
+        }
+    }
+
+    // ── Oyuncu Pazarı Detail Panel ────────────────────────────────────────────
+    private void drawPlayerMarketDetail(DrawContext ctx, int mouseX, int mouseY) {
+        drawSection(ctx, detailX, detailY, detailW, detailH);
+
+        int cx = detailX + detailW / 2;
+
+        if (selectedShopItemId == null) {
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§7Bir ürün seçin", cx, detailY + detailH / 3, C_SUBTEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§8← grid'den tıklayın", cx, detailY + detailH / 3 + 13, 0xFF444444);
+            return;
+        }
+
+        List<AllShopListingsPacket.Entry> sellers = shopByItem.get(selectedShopItemId);
+        if (sellers == null || sellers.isEmpty()) {
+            ctx.drawCenteredTextWithShadow(textRenderer, "§7Satıcı bulunamadı", cx, detailY + detailH / 3, C_SUBTEXT);
+            return;
+        }
+
+        int y = detailY + 6;
+
+        // Büyük item ikonu
+        int boxS = 36;
+        int boxX = cx - boxS / 2;
+        ctx.fill(boxX, y, boxX + boxS, y + boxS, C_SLOT_BORDER);
+        ctx.fill(boxX + 1, y + 1, boxX + boxS - 1, y + boxS - 1, C_SLOT);
+        ItemStack stack = getItemStack(selectedShopItemId);
+        if (!stack.isEmpty()) {
+            ctx.drawItem(stack, boxX + 10, y + 10);
+            ctx.drawItemInSlot(textRenderer, stack, boxX + 10, y + 10);
+        }
+        y += boxS + 5;
+
+        // İtem adı
+        String dispName = getItemDisplayName(selectedShopItemId);
+        if (textRenderer.getWidth(dispName) > detailW - 10) {
+            while (textRenderer.getWidth(dispName + "..") > detailW - 10 && dispName.length() > 3)
+                dispName = dispName.substring(0, dispName.length() - 1);
+            dispName += "..";
+        }
+        ctx.drawCenteredTextWithShadow(textRenderer, "§f" + dispName, cx, y, C_TEXT);
+        y += 13;
+
+        ctx.drawCenteredTextWithShadow(textRenderer,
+                "§7" + sellers.size() + " satıcı · §aStokta",
+                cx, y, C_SUBTEXT);
+        y += 12;
+
+        ctx.fill(detailX + 3, y, detailX + detailW - 3, y + 1, C_SEPARATOR);
+        y += 4;
+
+        // Satıcı listesi
+        int listH     = detailH - (y - detailY) - 55;
+        int rowH      = 18;
+        int visSelRows = Math.max(1, listH / rowH);
+        int maxSelScroll = Math.max(0, sellers.size() - visSelRows);
+        shopSellerScroll = Math.max(0, Math.min(shopSellerScroll, maxSelScroll));
+
+        ctx.fill(detailX + 2, y, detailX + detailW - 2, y + listH, C_SLOT_BORDER);
+        ctx.fill(detailX + 3, y + 1, detailX + detailW - 3, y + listH - 1, 0xFF141414);
+
+        for (int i = 0; i < visSelRows && i + shopSellerScroll < sellers.size(); i++) {
+            int idx = i + shopSellerScroll;
+            AllShopListingsPacket.Entry seller = sellers.get(idx);
+            int ry  = y + 1 + i * rowH;
+            boolean hov = inBounds(mouseX, mouseY, detailX + 3, ry, detailW - 6, rowH);
+            boolean sel = idx == selectedShopSellerIdx;
+
+            ctx.fill(detailX + 3, ry, detailX + detailW - 3, ry + rowH - 1,
+                    sel ? C_SLOT_SELECT : hov ? C_SLOT_HOVER : C_SLOT);
+
+            // Fiyat ve stok X pozisyonlarını önce hesapla (çakışmaması için)
+            String stk = "×" + seller.stock();
+            String pr  = "⬡" + formatPrice(seller.price());
+            int prW  = textRenderer.getWidth(pr);
+            int stkW = textRenderer.getWidth(stk);
+            int prX  = detailX + detailW - 5 - prW;
+            int stkX = prX - 5 - stkW;
+
+            // Satıcı adı (stok alanı başlamadan kesilir)
+            String sname = seller.ownerName();
+            int maxNamePx = stkX - (detailX + 5) - 3;
+            if (textRenderer.getWidth(sname) > maxNamePx) {
+                while (textRenderer.getWidth(sname + "..") > maxNamePx && sname.length() > 2)
+                    sname = sname.substring(0, sname.length() - 1);
+                sname += "..";
+            }
+            ctx.drawText(textRenderer, "§f" + sname, detailX + 5, ry + 5, sel ? C_GOLD : C_TEXT, false);
+
+            // Stok (fiyatın solunda, sabit boşlukla)
+            ctx.drawText(textRenderer, "§a" + stk, stkX, ry + 5, C_GREEN, false);
+
+            // Fiyat (sağ kenara yaslı)
+            ctx.drawText(textRenderer, "§6" + pr, prX, ry + 5, C_GOLD, false);
+        }
+        y += listH + 4;
+
+        // Miktar ve toplam bilgisi
+        if (selectedShopSellerIdx >= 0 && selectedShopSellerIdx < sellers.size()) {
+            AllShopListingsPacket.Entry sel = sellers.get(selectedShopSellerIdx);
+            double total = sel.price() * shopTradeAmount;
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§7Miktar: §f" + shopTradeAmount + "  §7Toplam: §6⬡" + formatPrice(total),
+                    cx, y, C_TEXT);
+        } else {
+            ctx.drawCenteredTextWithShadow(textRenderer,
+                    "§7Satıcı seçin ↑", cx, y, C_SUBTEXT);
+        }
+    }
+
+    // ── mouseClicked override ─────────────────────────────────────────────────
+    // Not: Player Market için tıklama işleme eklenir mevcut mouseClicked'a
+
+    private boolean handlePlayerMarketClick(double mx, double my) {
+        if (!isPlayerMarketSelected()) return false;
+
+        // Grid click
+        int startX = gridX + 4;
+        int startY = gridY + 4;
+        int totalCols = Math.max(1, (gridW - 8) / (SLOT_SIZE + SLOT_GAP));
+        int visRows   = Math.max(1, (gridH - 8) / (SLOT_SIZE + SLOT_GAP));
+
+        for (int row = 0; row < visRows; row++) {
+            int absRow = row + shopGridScroll;
+            for (int col = 0; col < totalCols; col++) {
+                int idx = absRow * totalCols + col;
+                if (idx >= shopItemIds.size()) break;
+                int sx = startX + col * (SLOT_SIZE + SLOT_GAP);
+                int sy = startY + row * (SLOT_SIZE + SLOT_GAP);
+                if (inBounds(mx, my, sx, sy, SLOT_SIZE, SLOT_SIZE)) {
+                    String itemId = shopItemIds.get(idx);
+                    if (!itemId.equals(selectedShopItemId)) {
+                        selectedShopItemId    = itemId;
+                        selectedShopSellerIdx = -1;
+                        shopSellerScroll      = 0;
+                        shopTradeAmount       = 1;
+                    }
+                    updateActionButtons();
+                    return true;
+                }
+            }
+        }
+
+        // Seller list click
+        if (selectedShopItemId != null && shopByItem.containsKey(selectedShopItemId)) {
+            List<AllShopListingsPacket.Entry> sellers = shopByItem.get(selectedShopItemId);
+            int y = detailY + 6 + 36 + 5 + 13 + 12 + 4;
+            int listH = detailH - (y - detailY) - 55;
+            int rowH  = 18;
+            int visSelRows = Math.max(1, listH / rowH);
+            for (int i = 0; i < visSelRows && i + shopSellerScroll < sellers.size(); i++) {
+                int idx = i + shopSellerScroll;
+                int ry  = y + 1 + i * rowH;
+                if (inBounds(mx, my, detailX + 3, ry, detailW - 6, rowH)) {
+                    selectedShopSellerIdx = idx;
+                    shopTradeAmount = 1;
+                    updateActionButtons();
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     @Override

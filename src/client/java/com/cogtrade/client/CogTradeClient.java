@@ -3,10 +3,13 @@ package com.cogtrade.client;
 
 import com.cogtrade.CogTrade;
 import com.cogtrade.block.MarketBlockEntity;
+import com.cogtrade.network.AllShopListingsPacket;
 import com.cogtrade.network.BalanceUpdatePacket;
 import com.cogtrade.network.BuySoundPacket;
 import com.cogtrade.network.LocateMarketPacket;
+import com.cogtrade.network.LocateTradePostPacket;
 import com.cogtrade.network.OpenMarketPacket;
+import com.cogtrade.network.OpenTradePostManagePacket;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -121,10 +124,16 @@ public class CogTradeClient implements ClientModInitializer {
                                 buf.readInt(), "", buf.readString(), buf.readString(),
                                 buf.readString(), buf.readDouble(), true));
                     }
-                    client.execute(() -> client.setScreen(new DepotScreen(available, listings)));
+                    client.execute(() -> {
+                        if (client.currentScreen instanceof DepotScreen existing) {
+                            existing.refresh(available, listings);
+                        } else {
+                            client.setScreen(new DepotScreen(available, listings));
+                        }
+                    });
                 });
 
-        // ── Player Shop GUI aç ────────────────────────────────────────────
+        // ── Player Shop GUI aç / yenile ──────────────────────────────────
         ClientPlayNetworking.registerGlobalReceiver(
                 com.cogtrade.network.OpenPlayerShopPacket.ID,
                 (client, handler, buf, responseSender) -> {
@@ -139,29 +148,104 @@ public class CogTradeClient implements ClientModInitializer {
                         String dispName = buf.readString();
                         String cat      = buf.readString();
                         double price    = buf.readDouble();
-                        int    stock    = buf.readInt();   // gerçek stok miktarı
+                        int    stock    = buf.readInt();
                         items.add(new ClientMarketItem(id, itemId, dispName, cat, price, stock));
                     }
-                    client.execute(() -> client.setScreen(
-                            new PlayerShopScreen(ownerUuid, ownerName, items, sellMult)));
+                    client.execute(() -> {
+                        // Aynı mağaza zaten açıksa yenile, yoksa yeni ekran aç
+                        if (client.currentScreen instanceof PlayerShopScreen existing
+                                && existing.getOwnerUuid().equals(ownerUuid)) {
+                            existing.refresh(items);
+                        } else {
+                            client.setScreen(new PlayerShopScreen(ownerUuid, ownerName, items, sellMult));
+                        }
+                    });
                 });
 
-        // ── Sandık seçim bildirimi ────────────────────────────────────────
+        // ── Trade Post yönetim GUI aç / yenile ───────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(OpenTradePostManagePacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    int availCount = buf.readInt();
+                    java.util.Map<String, Integer> available = new java.util.LinkedHashMap<>();
+                    for (int i = 0; i < availCount; i++) {
+                        available.put(buf.readString(), buf.readInt());
+                    }
+                    int listCount = buf.readInt();
+                    java.util.List<com.cogtrade.market.PlayerShopManager.ShopListing> listings =
+                            new java.util.ArrayList<>();
+                    for (int i = 0; i < listCount; i++) {
+                        listings.add(new com.cogtrade.market.PlayerShopManager.ShopListing(
+                                buf.readInt(), "", buf.readString(), buf.readString(),
+                                buf.readString(), buf.readDouble(), true));
+                    }
+                    client.execute(() -> {
+                        if (client.currentScreen instanceof TradePostScreen existing) {
+                            existing.refresh(available, listings);
+                        } else {
+                            client.setScreen(new TradePostScreen(available, listings));
+                        }
+                    });
+                });
+
+        // ── Tüm oyuncu mağaza ilanları ────────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(AllShopListingsPacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    int count = buf.readInt();
+                    java.util.List<AllShopListingsPacket.Entry> entries = new java.util.ArrayList<>();
+                    for (int i = 0; i < count; i++) {
+                        entries.add(new AllShopListingsPacket.Entry(
+                                buf.readString(),
+                                buf.readString(),
+                                buf.readString(),
+                                buf.readString(),
+                                buf.readString(),
+                                buf.readDouble(),
+                                buf.readInt()
+                        ));
+                    }
+                    client.execute(() -> {
+                        if (client.currentScreen instanceof MarketScreen ms) {
+                            ms.updatePlayerShopData(entries);
+                        }
+                    });
+                });
+
+        // ── Trade post locate paketi ──────────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(LocateTradePostPacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    boolean found = buf.readBoolean();
+                    if (found) {
+                        int x = buf.readInt();
+                        int y = buf.readInt();
+                        int z = buf.readInt();
+                        client.execute(() -> MarketLocateRenderer.setTradePostTarget(
+                                new net.minecraft.util.math.BlockPos(x, y, z)));
+                    } else {
+                        client.execute(() -> MarketLocateRenderer.setTradePostTarget(null));
+                    }
+                });
+
+        // ── Sandık seçim bildirimi (highlight renderer güncelle) ─────────
         ClientPlayNetworking.registerGlobalReceiver(
                 com.cogtrade.network.ChestSelectedPacket.ID,
                 (client, handler, buf, responseSender) -> {
-                    net.minecraft.util.math.BlockPos pos = buf.readBlockPos();
-                    boolean added = buf.readBoolean();
-                    int total = buf.readInt();
-                    // Bildirim isteğe bağlı
+                    int count = buf.readInt();
+                    java.util.List<net.minecraft.util.math.BlockPos> positions = new java.util.ArrayList<>();
+                    for (int i = 0; i < count; i++) {
+                        positions.add(buf.readBlockPos());
+                    }
+                    client.execute(() -> ChestHighlightRenderer.setChests(positions));
                 });
 
         // ── Bağlantı kesilince sıfırla ────────────────────────────────────
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) ->
-                ClientEconomyData.reset());
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            ClientEconomyData.reset();
+            ChestHighlightRenderer.clear();
+        });
 
         CogTradeHud.register();
         MarketLocateRenderer.register();
+        ChestHighlightRenderer.register();
 
         // ── Block Entity Renderer'ları CLIENT_STARTED'da kaydet ───────────
         // TYPE'lar CogTrade.onInitialize()'da atandığından burada null olabilir,

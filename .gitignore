@@ -33,6 +33,9 @@ bin/
 run/
 run2/
 
+# claude code
+.claude/
+
 # java
 
 hs_err_*.log

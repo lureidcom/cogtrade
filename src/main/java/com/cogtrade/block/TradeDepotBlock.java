@@ -110,8 +110,11 @@ public class TradeDepotBlock extends Block implements BlockEntityProvider {
         if (!world.isClient() && world.getBlockEntity(pos) instanceof TradeDepotBlockEntity depot) {
             String ownerUuid = depot.getOwnerUuid();
             if (ownerUuid != null && ownerUuid.equals(player.getUuid().toString())) {
-                PlayerShopManager.removeDepot(ownerUuid);
-                player.sendMessage(Text.literal("§eDepot kaldırıldı. Trade Post bağlantısı da koptu."));
+                PlayerShopManager.removeDepot(ownerUuid, pos);
+                boolean hasMore = PlayerShopManager.hasDepot(ownerUuid);
+                player.sendMessage(Text.literal(hasMore
+                        ? "§eDepot kaldırıldı. Diğer depot(lar)ın hâlâ aktif."
+                        : "§eDepot kaldırıldı. Tüm depotlar ve Trade Post bağlantısı temizlendi."));
             }
         }
         super.onBreak(world, pos, state, player);

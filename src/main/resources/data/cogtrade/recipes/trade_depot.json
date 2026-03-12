@@ -1,0 +1,16 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "CCC",
+    "CSC",
+    "CCC"
+  ],
+  "key": {
+    "C": { "item": "minecraft:chest" },
+    "S": { "item": "minecraft:iron_ingot" }
+  },
+  "result": {
+    "item": "cogtrade:trade_depot",
+    "count": 1
+  }
+}

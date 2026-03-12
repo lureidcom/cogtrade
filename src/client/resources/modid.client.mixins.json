@@ -1,0 +1,11 @@
+{
+	"required": true,
+	"package": "com.cogtrade.mixin.client",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"ExampleClientMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

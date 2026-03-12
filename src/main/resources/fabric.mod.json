@@ -1,0 +1,33 @@
+{
+	"schemaVersion": 1,
+	"id": "cogtrade",
+	"version": "${version}",
+	"name": "CogTrade",
+	"description": "⚠ ALPHA — Oyuncu odaklı ekonomi sistemi. Bu sürüm deneyseldir; hatalar, veri kaybı veya beklenmedik davranışlar yaşanabilir. Önemli dünyalarda kullanmadan önce yedek alın. | Player-driven economy mod (Trade Depot, Trade Post, server market). ALPHA version — bugs and breaking changes expected.",
+	"authors": [
+		"Kernel Dev"
+	],
+	"contact": {
+		"modrinth": "https://modrinth.com/mod/cogtrade"
+	},
+	"license": "MIT",
+	"icon": "assets/cogtrade/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.cogtrade.CogTrade"
+		],
+		"client": [
+			"com.cogtrade.client.CogTradeClient"
+		]
+	},
+	"mixins": [
+		"cogtrade.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.0",
+		"minecraft": "~1.20.1",
+		"java": ">=17",
+		"fabric-api": "*"
+	}
+}

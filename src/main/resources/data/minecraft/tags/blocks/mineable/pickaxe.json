@@ -1,0 +1,7 @@
+{
+  "replace": false,
+  "values": [
+    "cogtrade:trade_depot",
+    "cogtrade:trade_post"
+  ]
+}

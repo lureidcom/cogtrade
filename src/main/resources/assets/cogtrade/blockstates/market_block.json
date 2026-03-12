@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "cogtrade:block/market_block" }
+  }
+}

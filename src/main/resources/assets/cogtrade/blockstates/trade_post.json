@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "cogtrade:block/trade_post" }
+  }
+}

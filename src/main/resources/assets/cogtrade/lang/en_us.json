@@ -1,0 +1,15 @@
+{
+  "key.cogtrade.market": "Open Market",
+  "category.cogtrade": "CogTrade",
+
+  "block.cogtrade.market_block": "Market Block",
+  "item.cogtrade.market_block": "Market Block",
+
+  "block.cogtrade.trade_depot": "Trade Depot",
+  "item.cogtrade.trade_depot": "Trade Depot",
+
+  "block.cogtrade.trade_post": "Trade Post",
+  "item.cogtrade.trade_post": "Trade Post",
+
+  "itemGroup.cogtrade.main": "CogTrade"
+}

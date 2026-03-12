@@ -1,0 +1,15 @@
+{
+  "key.cogtrade.market": "Pazarı Aç",
+  "category.cogtrade": "CogTrade",
+
+  "block.cogtrade.market_block": "Pazar Bloğu",
+  "item.cogtrade.market_block": "Pazar Bloğu",
+
+  "block.cogtrade.trade_depot": "Ticaret Deposu",
+  "item.cogtrade.trade_depot": "Ticaret Deposu",
+
+  "block.cogtrade.trade_post": "Ticaret Postası",
+  "item.cogtrade.trade_post": "Ticaret Postası",
+
+  "itemGroup.cogtrade.main": "CogTrade"
+}

@@ -65,8 +65,8 @@ Requires permission level **2** (operator).
 ## Player Commands
 
 ```
-/balance          — Check your balance
-/pay <player> <amount>
+/balance               — Check your balance
+/pay <player> <amount> — Send money to a player
 ```
 
 ---
@@ -74,7 +74,7 @@ Requires permission level **2** (operator).
 ## Building from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cogtrade.git
+git clone https://github.com/Kernel-Developer/cogtrade.git
 cd cogtrade
 ./gradlew build
 ```
@@ -92,4 +92,4 @@ MIT — see [LICENSE](LICENSE)
 ## Links
 
 - [Modrinth](https://modrinth.com/mod/cogtrade)
-- [Issue Tracker](https://github.com/YOUR_USERNAME/cogtrade/issues)
+- [Issue Tracker](https://github.com/Kernel-Developer/cogtrade/issues)

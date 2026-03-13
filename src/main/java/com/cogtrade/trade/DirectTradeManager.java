@@ -42,6 +42,9 @@ public class DirectTradeManager {
     /** Tracks one outgoing request per initiator so they can't spam multiple targets. */
     private static final Map<UUID, UUID> initiatorToTarget = new ConcurrentHashMap<>();
 
+    /** playerUuid → pending item returns (for offline recovery) */
+    private static final Map<UUID, List<PendingItemReturn>> pendingReturns = new ConcurrentHashMap<>();
+
     private record PendingRequest(UUID initiatorUuid,
                                    String initiatorName,
                                    String requestId,
@@ -64,6 +67,7 @@ public class DirectTradeManager {
         initiatorToTarget.clear();
         sessions.clear();
         playerToSession.clear();
+        pendingReturns.clear();
     }
 
     /** Called on SERVER_STOPPING. */
@@ -195,13 +199,15 @@ public class DirectTradeManager {
 
     /**
      * Moves an item between player inventory and their offer slot.
+     * Supports partial stack moves based on click type.
      *
-     * @param offerSlot 0–8  target offer slot; -1 = auto-pick first empty
+     * @param offerSlot 0–8  target offer slot; -1 = auto-pick first empty or matching stack
      * @param invSlot   0–35 inventory slot to take from; -1 = return offer slot to inventory
+     * @param clickType 0 = left (full stack), 1 = right (single item)
      */
     public static void handleItemMove(MinecraftServer server,
                                        ServerPlayerEntity player,
-                                       String sessionId, int offerSlot, int invSlot) {
+                                       String sessionId, int offerSlot, int invSlot, byte clickType) {
         DirectTradeSession session = getValidSession(player, sessionId);
         if (session == null) return;
 
@@ -209,6 +215,7 @@ public class DirectTradeManager {
         if (offer == null) return;
 
         net.minecraft.entity.player.PlayerInventory inv = player.getInventory();
+        boolean isRightClick = (clickType == TradeItemMovePacket.CLICK_RIGHT);
 
         if (invSlot == -1) {
             // Return item from offer slot to inventory
@@ -216,61 +223,73 @@ public class DirectTradeManager {
             ItemStack inOffer = offer[offerSlot];
             if (inOffer.isEmpty()) return;
 
-            ItemStack copy = inOffer.copy();
-            if (!inv.insertStack(copy)) {
-                player.sendMessage(Text.literal("§c[CogTrade] Envanter dolu — eşya iade edilemedi."), false);
-                return;
+            int amount = isRightClick ? 1 : inOffer.getCount();
+            int removed = session.removeFromOfferSlot(player.getUuid(), offerSlot, amount);
+
+            if (removed > 0) {
+                ItemStack toReturn = inOffer.copyWithCount(removed);
+                if (!inv.insertStack(toReturn)) {
+                    // Failed to insert - restore to offer
+                    session.addToOfferSlot(player.getUuid(), offerSlot, inOffer, removed);
+                    player.sendMessage(Text.literal("§c[CogTrade] Envanter dolu — eşya iade edilemedi."), false);
+                    return;
+                }
+                inv.markDirty();  // CRITICAL: Ensure inventory sync
             }
-            session.setOfferItem(player.getUuid(), offerSlot, ItemStack.EMPTY);
 
         } else {
             // Move item from inventory slot to offer
             if (invSlot < 0 || invSlot >= 36) return;
+            ItemStack inInv = inv.getStack(invSlot);
+            if (inInv.isEmpty()) return;
 
-            // Resolve target offer slot
-            int targetSlot;
-            if (offerSlot == -1) {
+            // Determine amount to move
+            int amount = isRightClick ? 1 : inInv.getCount();
+
+            // Resolve target slot
+            int targetSlot = offerSlot;
+            if (targetSlot == -1) {
+                // Auto-pick: try to merge first, then find empty
                 targetSlot = -1;
                 for (int i = 0; i < DirectTradeSession.OFFER_SLOTS; i++) {
-                    if (offer[i].isEmpty()) { targetSlot = i; break; }
+                    if (ItemStack.canCombine(offer[i], inInv) && offer[i].getCount() < offer[i].getMaxCount()) {
+                        targetSlot = i;
+                        break;
+                    }
+                }
+                if (targetSlot == -1) {
+                    for (int i = 0; i < DirectTradeSession.OFFER_SLOTS; i++) {
+                        if (offer[i].isEmpty()) {
+                            targetSlot = i;
+                            break;
+                        }
+                    }
                 }
                 if (targetSlot == -1) {
                     player.sendMessage(Text.literal("§c[CogTrade] Teklif alanı dolu!"), false);
                     return;
                 }
-            } else {
-                if (offerSlot < 0 || offerSlot >= DirectTradeSession.OFFER_SLOTS) return;
-                targetSlot = offerSlot;
             }
 
-            ItemStack inInv = inv.getStack(invSlot);
-            if (inInv.isEmpty()) {
-                // Clicking empty inventory slot on a filled offer slot → return the offer item
-                if (!offer[targetSlot].isEmpty()) {
-                    ItemStack copy = offer[targetSlot].copy();
-                    if (!inv.insertStack(copy)) {
-                        player.sendMessage(Text.literal("§c[CogTrade] Envanter dolu."), false);
-                        return;
-                    }
-                    session.setOfferItem(player.getUuid(), targetSlot, ItemStack.EMPTY);
-                }
-            } else {
-                // Move inv item to offer, swap if offer slot was occupied
-                ItemStack itemToOffer    = inInv.copy();
-                ItemStack currentInOffer = offer[targetSlot].copy();
+            if (targetSlot < 0 || targetSlot >= DirectTradeSession.OFFER_SLOTS) return;
 
-                inv.removeStack(invSlot);
-
-                if (!currentInOffer.isEmpty()) {
-                    // Return previous offer item to the same inventory slot
-                    inv.setStack(invSlot, currentInOffer);
-                }
-
-                session.setOfferItem(player.getUuid(), targetSlot, itemToOffer);
+            // Add to offer
+            int added = session.addToOfferSlot(player.getUuid(), targetSlot, inInv, amount);
+            if (added > 0) {
+                // Remove from inventory
+                inInv.decrement(added);
+                inv.markDirty();  // CRITICAL: Ensure inventory sync
             }
         }
 
         syncSessionToPlayers(server, session);
+    }
+
+    /** Legacy overload for backward compatibility during transition */
+    public static void handleItemMove(MinecraftServer server,
+                                       ServerPlayerEntity player,
+                                       String sessionId, int offerSlot, int invSlot) {
+        handleItemMove(server, player, sessionId, offerSlot, invSlot, TradeItemMovePacket.CLICK_LEFT);
     }
 
     /** Sets a player's coin offer; clamps to [0, balance] and resets ready states. */
@@ -320,28 +339,30 @@ public class DirectTradeManager {
     // ── Finalization ──────────────────────────────────────────────────────
 
     private static void finalizeSession(MinecraftServer server, DirectTradeSession session) {
-        // Guard against double-finalization from concurrent ready packets
-        if (!session.isActive()) return;
+        // Synchronized block to prevent race conditions during finalization
+        synchronized (session) {
+            // Guard against double-finalization from concurrent ready packets
+            if (!session.isActive()) return;
 
-        ServerPlayerEntity initiator = server.getPlayerManager().getPlayer(session.getInitiatorUuid());
-        ServerPlayerEntity target    = server.getPlayerManager().getPlayer(session.getTargetUuid());
+            ServerPlayerEntity initiator = server.getPlayerManager().getPlayer(session.getInitiatorUuid());
+            ServerPlayerEntity target    = server.getPlayerManager().getPlayer(session.getTargetUuid());
 
-        // Both players must be online
-        if (initiator == null || target == null) {
-            abortSession(server, session, "Bir oyuncu bağlantısı koptu.");
-            return;
-        }
+            // Both players must be online
+            if (initiator == null || target == null) {
+                abortSession(server, session, "Bir oyuncu bağlantısı koptu.");
+                return;
+            }
 
-        // Validate session membership is still consistent
-        String initSid = playerToSession.get(session.getInitiatorUuid());
-        String tgtSid  = playerToSession.get(session.getTargetUuid());
-        if (!session.getSessionId().equals(initSid) || !session.getSessionId().equals(tgtSid)) {
-            abortSession(server, session, "Oturum tutarsızlığı tespit edildi.");
-            return;
-        }
+            // Validate session membership is still consistent
+            String initSid = playerToSession.get(session.getInitiatorUuid());
+            String tgtSid  = playerToSession.get(session.getTargetUuid());
+            if (!session.getSessionId().equals(initSid) || !session.getSessionId().equals(tgtSid)) {
+                abortSession(server, session, "Oturum tutarsızlığı tespit edildi.");
+                return;
+            }
 
-        // Re-check ready (another packet might have reset it between bothReady() and here)
-        if (!session.bothReady()) return;
+            // Re-check ready (another packet might have reset it between bothReady() and here)
+            if (!session.bothReady()) return;
 
         double initCoins = session.getInitiatorCoins();
         double tgtCoins  = session.getTargetCoins();
@@ -438,6 +459,7 @@ public class DirectTradeManager {
         logTradeCompleted(session, initCoins, tgtCoins);
 
         cleanupSession(session);
+        }  // End synchronized block
     }
 
     // ── Abort helpers ─────────────────────────────────────────────────────
@@ -451,27 +473,19 @@ public class DirectTradeManager {
         ServerPlayerEntity initiator = server.getPlayerManager().getPlayer(session.getInitiatorUuid());
         ServerPlayerEntity target    = server.getPlayerManager().getPlayer(session.getTargetUuid());
 
+        // Safe item return - use pending queue if player offline
         if (initiator != null) {
             returnItemsToOwner(initiator, session.getInitiatorOffer());
         } else {
-            // Drop initiator's items near target if target is online, else log loss
-            if (target != null) {
-                for (ItemStack s : session.getInitiatorOffer())
-                    if (!s.isEmpty()) target.dropItem(s.copy(), false);
-            }
-            CogTrade.LOGGER.warn("[CogTrade] {} çevrimdışıyken takas iptal edildi — eşyalar kaybolabilir.",
-                    session.getInitiatorName());
+            queuePendingReturn(session.getInitiatorUuid(), session.getInitiatorName(),
+                    session.getInitiatorOffer(), "Takas iptal: " + reason);
         }
 
         if (target != null) {
             returnItemsToOwner(target, session.getTargetOffer());
         } else {
-            if (initiator != null) {
-                for (ItemStack s : session.getTargetOffer())
-                    if (!s.isEmpty()) initiator.dropItem(s.copy(), false);
-            }
-            CogTrade.LOGGER.warn("[CogTrade] {} çevrimdışıyken takas iptal edildi — eşyalar kaybolabilir.",
-                    session.getTargetName());
+            queuePendingReturn(session.getTargetUuid(), session.getTargetName(),
+                    session.getTargetOffer(), "Takas iptal: " + reason);
         }
 
         cleanupSession(session);
@@ -693,5 +707,52 @@ public class DirectTradeManager {
 
     public static boolean hasPendingRequest(UUID targetUuid) {
         return pendingRequests.containsKey(targetUuid);
+    }
+
+    // ── Pending item return system (safe offline recovery) ────────────────
+
+    /**
+     * Queues items for return to an offline player.
+     * Items will be delivered when the player logs back in.
+     */
+    private static void queuePendingReturn(UUID ownerUuid, String ownerName,
+                                            ItemStack[] items, String reason) {
+        PendingItemReturn pending = new PendingItemReturn(ownerUuid, ownerName, items, reason);
+        if (pending.isEmpty()) return;
+
+        pendingReturns.computeIfAbsent(ownerUuid, k -> new ArrayList<>()).add(pending);
+
+        CogTrade.LOGGER.info("[CogTrade] {} için {} eşya beklemede — oyuncu offline olduğunda güvenli iade.",
+                ownerName, pending.getItems().size());
+    }
+
+    /**
+     * Called when a player joins to return any pending items from
+     * trades that were cancelled while they were offline.
+     */
+    public static void handlePlayerJoin(MinecraftServer server, ServerPlayerEntity player) {
+        List<PendingItemReturn> returns = pendingReturns.remove(player.getUuid());
+        if (returns == null || returns.isEmpty()) return;
+
+        int totalItems = 0;
+        for (PendingItemReturn pending : returns) {
+            for (ItemStack stack : pending.getItems()) {
+                if (!stack.isEmpty()) {
+                    if (!player.getInventory().insertStack(stack.copy())) {
+                        // Last resort: drop at player feet if inventory completely full
+                        player.dropItem(stack.copy(), false);
+                    }
+                    totalItems++;
+                }
+            }
+        }
+
+        if (totalItems > 0) {
+            player.sendMessage(Text.literal(
+                    "§e[CogTrade] §7Offline olduğun sırada iptal edilen takaslardan §a" +
+                            totalItems + " eşya §7iade edildi."), false);
+            CogTrade.LOGGER.info("[CogTrade] {} için {} bekleyen eşya iade edildi.",
+                    player.getName().getString(), totalItems);
+        }
     }
 }

@@ -134,6 +134,64 @@ public class DirectTradeSession {
     }
 
     /**
+     * Adds up to 'amount' items from sourceStack into the offer slot.
+     * Attempts to merge with existing compatible stack first.
+     * Returns the actual amount added.
+     */
+    public int addToOfferSlot(UUID uuid, int slot, ItemStack sourceStack, int amount) {
+        ItemStack[] offer = getOfferFor(uuid);
+        if (offer == null || slot < 0 || slot >= OFFER_SLOTS) return 0;
+        if (sourceStack.isEmpty() || amount <= 0) return 0;
+
+        ItemStack existing = offer[slot];
+        int added = 0;
+
+        if (existing.isEmpty()) {
+            // Slot is empty - place new stack
+            int toAdd = Math.min(amount, sourceStack.getMaxCount());
+            offer[slot] = sourceStack.copyWithCount(toAdd);
+            added = toAdd;
+        } else if (ItemStack.canCombine(existing, sourceStack)) {
+            // Merge into existing stack
+            int space = existing.getMaxCount() - existing.getCount();
+            int toAdd = Math.min(amount, space);
+            if (toAdd > 0) {
+                existing.increment(toAdd);
+                added = toAdd;
+            }
+        }
+
+        if (added > 0) {
+            resetReady();
+            revision++;
+        }
+        return added;
+    }
+
+    /**
+     * Removes up to 'amount' items from the offer slot.
+     * Returns the actual amount removed.
+     */
+    public int removeFromOfferSlot(UUID uuid, int slot, int amount) {
+        ItemStack[] offer = getOfferFor(uuid);
+        if (offer == null || slot < 0 || slot >= OFFER_SLOTS) return 0;
+
+        ItemStack existing = offer[slot];
+        if (existing.isEmpty() || amount <= 0) return 0;
+
+        int toRemove = Math.min(amount, existing.getCount());
+        existing.decrement(toRemove);
+
+        if (existing.isEmpty()) {
+            offer[slot] = ItemStack.EMPTY;
+        }
+
+        resetReady();
+        revision++;
+        return toRemove;
+    }
+
+    /**
      * Sets the coin offer for uuid.  Resets ready states.
      * @return false if uuid is not in this session
      */

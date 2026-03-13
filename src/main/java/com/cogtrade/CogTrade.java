@@ -147,6 +147,9 @@ public class CogTrade implements ModInitializer {
                 player.sendMessage(Text.literal(
                         "§8Sorunları bildirmek için: modrinth.com/mod/cogtrade"));
                 player.sendMessage(Text.literal(""));
+
+                // Return any pending trade items from previous disconnections
+                DirectTradeManager.handlePlayerJoin(server, player);
             });
 
             if (DatabaseManager.getConnection() == null) {
@@ -551,8 +554,9 @@ public class CogTrade implements ModInitializer {
                     String sessionId = buf.readString();
                     int offerSlot    = buf.readInt();
                     int invSlot      = buf.readInt();
+                    byte clickType   = buf.readByte();
                     server.execute(() ->
-                            DirectTradeManager.handleItemMove(server, player, sessionId, offerSlot, invSlot));
+                            DirectTradeManager.handleItemMove(server, player, sessionId, offerSlot, invSlot, clickType));
                 });
 
         // ── Doğrudan takas: coin teklifi ──────────────────────────────────

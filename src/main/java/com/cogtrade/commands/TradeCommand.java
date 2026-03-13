@@ -3,23 +3,74 @@ package com.cogtrade.commands;
 import com.cogtrade.trade.DirectTradeManager;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
+import net.minecraft.command.CommandSource;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 
 /**
- * /trade <oyuncu>   — takas isteği gönder
- * /trade accept     — bekleyen isteği kabul et
- * /trade reject     — bekleyen isteği reddet
- * /trade cancel     — aktif takas seansını iptal et
+ * /trade offer <oyuncu>   — takas isteği gönder
+ * /trade accept           — bekleyen isteği kabul et
+ * /trade reject           — bekleyen isteği reddet
+ * /trade cancel           — aktif takas seansını iptal et
  */
 public class TradeCommand {
+
+    // Player name suggestions for online players
+    private static final SuggestionProvider<ServerCommandSource> PLAYER_SUGGESTIONS =
+            (ctx, builder) -> {
+                return CommandSource.suggestMatching(
+                        ctx.getSource().getServer().getPlayerNames(),
+                        builder
+                );
+            };
 
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
 
         dispatcher.register(
                 CommandManager.literal("trade")
+
+                        // /trade offer <player>
+                        .then(CommandManager.literal("offer")
+                                .then(CommandManager.argument("oyuncu", StringArgumentType.word())
+                                        .suggests(PLAYER_SUGGESTIONS)
+                                        .executes(ctx -> {
+                                            ServerCommandSource source = ctx.getSource();
+                                            ServerPlayerEntity sender = source.getPlayer();
+                                            if (sender == null) { source.sendError(Text.literal("Sadece oyuncular.")); return 0; }
+
+                                            String targetName = StringArgumentType.getString(ctx, "oyuncu");
+
+                                            if (sender.getName().getString().equalsIgnoreCase(targetName)) {
+                                                sender.sendMessage(Text.literal("§cKendine takas isteği gönderemezsin."), false);
+                                                return 0;
+                                            }
+
+                                            ServerPlayerEntity target = source.getServer().getPlayerManager().getPlayer(targetName);
+                                            if (target == null) {
+                                                sender.sendMessage(Text.literal("§c'" + targetName + "' şu an çevrimiçi değil."), false);
+                                                return 0;
+                                            }
+
+                                            String result = DirectTradeManager.sendRequest(source.getServer(), sender, target);
+                                            switch (result) {
+                                                case "self" ->
+                                                        sender.sendMessage(Text.literal("§cKendine takas isteği gönderemezsin."), false);
+                                                case "already_in_session" ->
+                                                        sender.sendMessage(Text.literal("§cZaten aktif bir takas seansındasın."), false);
+                                                case "target_in_session" ->
+                                                        sender.sendMessage(Text.literal("§c" + targetName + " zaten başka bir takasta."), false);
+                                                case "request_pending" ->
+                                                        sender.sendMessage(Text.literal("§cZaten bekleyen bir isteğin var."), false);
+                                                case "target_busy" ->
+                                                        sender.sendMessage(Text.literal("§c" + targetName + " şu an başka bir takas isteğini yanıtlıyor."), false);
+                                                case "sent" ->
+                                                        sender.sendMessage(Text.literal("§e[CogTrade] §f" + targetName + "§7'ya takas isteği gönderildi. Yanıtı bekleniyor..."), false);
+                                            }
+                                            return result.equals("sent") ? 1 : 0;
+                                        })))
 
                         // /trade accept
                         .then(CommandManager.literal("accept")
@@ -65,44 +116,6 @@ public class TradeCommand {
                                     }
                                     DirectTradeManager.handleCancel(ctx.getSource().getServer(), player, session.getSessionId());
                                     return 1;
-                                }))
-
-                        // /trade <oyuncu>
-                        .then(CommandManager.argument("oyuncu", StringArgumentType.word())
-                                .executes(ctx -> {
-                                    ServerCommandSource source = ctx.getSource();
-                                    ServerPlayerEntity sender = source.getPlayer();
-                                    if (sender == null) { source.sendError(Text.literal("Sadece oyuncular.")); return 0; }
-
-                                    String targetName = StringArgumentType.getString(ctx, "oyuncu");
-
-                                    if (sender.getName().getString().equalsIgnoreCase(targetName)) {
-                                        sender.sendMessage(Text.literal("§cKendine takas isteği gönderemezsin."), false);
-                                        return 0;
-                                    }
-
-                                    ServerPlayerEntity target = source.getServer().getPlayerManager().getPlayer(targetName);
-                                    if (target == null) {
-                                        sender.sendMessage(Text.literal("§c'" + targetName + "' şu an çevrimiçi değil."), false);
-                                        return 0;
-                                    }
-
-                                    String result = DirectTradeManager.sendRequest(source.getServer(), sender, target);
-                                    switch (result) {
-                                        case "self" ->
-                                            sender.sendMessage(Text.literal("§cKendine takas isteği gönderemezsin."), false);
-                                        case "already_in_session" ->
-                                            sender.sendMessage(Text.literal("§cZaten aktif bir takas seansındasın."), false);
-                                        case "target_in_session" ->
-                                            sender.sendMessage(Text.literal("§c" + targetName + " zaten başka bir takasta."), false);
-                                        case "request_pending" ->
-                                            sender.sendMessage(Text.literal("§cZaten bekleyen bir isteğin var. Önce iptal etmek için §e/trade cancel§c kullan."), false);
-                                        case "target_busy" ->
-                                            sender.sendMessage(Text.literal("§c" + targetName + " şu an başka bir takas isteğini yanıtlıyor."), false);
-                                        case "sent" ->
-                                            sender.sendMessage(Text.literal("§e[CogTrade] §f" + targetName + "§7'ya takas isteği gönderildi. Yanıtı bekleniyor..."), false);
-                                    }
-                                    return result.equals("sent") ? 1 : 0;
                                 }))
         );
     }

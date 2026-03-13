@@ -1,14 +1,21 @@
 # CogTrade
 
-> ⚠️ **ALPHA** — This mod is in early development. Bugs, data loss, and breaking changes are expected. Always back up your world before use.
+> ⚠️ **ALPHA v1.1.0** — This mod is in early development. Bugs, data loss, and breaking changes are expected. Always back up your world before use.
 
 A player-driven economy mod for **Minecraft 1.20.1 (Fabric)**.
-CogTrade adds a server-side market, player trade shops, and an in-game currency system — all stored in a local SQLite database.
+CogTrade adds a server-side market, player trade shops, direct player-to-player trading, and an in-game currency system — all stored in a local SQLite database.
 
 ---
 
 ## Features
 
+### 🆕 Direct Player Trading (v1.1.0)
+- **Live Trade System** — Trade items and coins directly with other players in real-time
+- **Modern GUI** — Professional 450×300px interface with color-coded sections
+- **Partial Stack Support** — Move entire stacks, single items, or precise quantities
+- **Safe & Secure** — Automatic item recovery, anti-dupe protection, mutual confirmation required
+
+### Core Features
 - **Server Market** — Admin-managed global shop with configurable items, prices, and stock
 - **Trade Depot** — Place your own shop block; link chests as stock storage
 - **Trade Post** — Public-facing counter where players can browse and buy from your depot
@@ -64,10 +71,27 @@ Requires permission level **2** (operator).
 
 ## Player Commands
 
+### Economy
 ```
 /balance               — Check your balance
 /pay <player> <amount> — Send money to a player
 ```
+
+### Direct Trading (New in v1.1.0)
+```
+/trade offer <player>  — Send a trade request to another player
+/trade accept          — Accept an incoming trade request
+/trade reject          — Reject an incoming trade request
+/trade cancel          — Cancel your active trade session
+```
+
+**Trade Controls:**
+- **Left-click** inventory item → Add full stack to offer
+- **Right-click** inventory item → Add 1 item to offer
+- **Middle-click** offer slot → Open quantity editor for precise control
+- **Left-click** offer slot → Return full stack to inventory
+- **Right-click** offer slot → Return 1 item to inventory
+- Both players must click **"HAZIR"** (Ready) to complete the trade
 
 ---
 

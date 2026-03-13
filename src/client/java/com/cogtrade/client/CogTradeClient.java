@@ -27,7 +27,8 @@ import java.util.List;
 public class CogTradeClient implements ClientModInitializer {
 
     private static KeyBinding marketKey;
-
+    private static KeyBinding bookGuiKey;
+    
     @Override
     public void onInitializeClient() {
         CogTrade.LOGGER.info("CogTrade client başlatılıyor...");
@@ -44,6 +45,22 @@ public class CogTradeClient implements ClientModInitializer {
             while (marketKey.wasPressed()) {
                 if (client.player != null && client.currentScreen == null) {
                     client.getNetworkHandler().sendChatCommand("market");
+                }
+            }
+        });
+
+        // ── Keybinding: L tuşu → CogTrade Book GUI ───────────────────────
+        bookGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.cogtrade.book",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_L,
+                "category.cogtrade"
+        ));
+
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (bookGuiKey.wasPressed()) {
+                if (client.player != null) {
+                    client.setScreen(new com.cogtrade.client.gui.CogTradeBookScreen());
                 }
             }
         });

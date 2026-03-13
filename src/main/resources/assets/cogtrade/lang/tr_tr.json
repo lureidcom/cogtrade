@@ -1,6 +1,8 @@
 {
   "key.cogtrade.market": "Pazarı Aç",
   "category.cogtrade": "CogTrade",
+  "key.cogtrade.book": "Kılavuzu Aç",
+  "gui.cogtrade.book": "CogTrade Kılavuzu",
 
   "block.cogtrade.market_block": "Pazar Bloğu",
   "item.cogtrade.market_block": "Pazar Bloğu",

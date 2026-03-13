@@ -1,6 +1,8 @@
 {
   "key.cogtrade.market": "Open Market",
+  "key.cogtrade.book": "Open CogTrade Book",
   "category.cogtrade": "CogTrade",
+  "gui.cogtrade.book": "CogTrade Book",
 
   "block.cogtrade.market_block": "Market Block",
   "item.cogtrade.market_block": "Market Block",

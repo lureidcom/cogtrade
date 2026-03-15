@@ -1,159 +1,56 @@
 package com.cogtrade.client.gui;
 
 /**
- * Centralized layout constants and bounds calculation for CogTrade GUI system.
- * Provides consistent dimensions and scaling for all CogTrade screens.
+ * Layout constants for the CogTrade book GUI.
+ *
+ * <p>All element positions are expressed in <em>book-native space</em>
+ * (1623 × 1080 px, matching the Figma canvas).  Convert to screen pixels
+ * with {@code sc(value)} inside {@link CogTradeBookScreen}.</p>
+ *
+ * <h3>Safe-zone derivation</h3>
+ * Figma absolute → book-relative:  {@code bookX = figmaX − 148},  {@code bookY = figmaY}
+ * <pre>
+ *   Left  page safe zone : figma x=327  y=213  w=599  h=649
+ *   Right page safe zone : figma x=992  y=213  w=599  h=649
+ * </pre>
  */
 public class CogTradeGuiLayout {
 
-    // Book texture dimensions (from assets/cogtrade/textures/gui/book.png)
-    public static final int BOOK_TEXTURE_WIDTH = 1024;
-    public static final int BOOK_TEXTURE_HEIGHT = 576;
+    // ── Book texture ───────────────────────────────────────────────────────
 
-    // Screen coverage targets (percentage of screen to use at maximum)
-    private static final double MAX_WIDTH_RATIO = 0.84;
-    private static final double MAX_HEIGHT_RATIO = 0.80;
+    /** Native pixel width  of {@code book.png}. */
+    public static final int BOOK_W = 1623;
+    /** Native pixel height of {@code book.png}. */
+    public static final int BOOK_H = 1080;
 
-    // Page layout constants (offsets relative to scaled book panel)
-    public static final int LEFT_PAGE_X_OFFSET = 50;
-    public static final int LEFT_PAGE_Y_OFFSET = 50;
-    public static final int LEFT_PAGE_WIDTH = 430;
-    public static final int LEFT_PAGE_HEIGHT = 476;
+    /** Maximum fraction of the screen the book may occupy. */
+    private static final double MAX_W_RATIO = 0.90;
+    private static final double MAX_H_RATIO = 0.90;
 
-    public static final int RIGHT_PAGE_X_OFFSET = 544;
-    public static final int RIGHT_PAGE_Y_OFFSET = 50;
-    public static final int RIGHT_PAGE_WIDTH = 430;
-    public static final int RIGHT_PAGE_HEIGHT = 476;
+    // ── Left page safe zone (book-native) ─────────────────────────────────
 
-    // Margins and spacing
-    public static final int CONTENT_MARGIN = 20;
-    public static final int ELEMENT_SPACING = 10;
+    public static final int LEFT_PAGE_X = 179;   // 327 − 148
+    public static final int LEFT_PAGE_Y = 213;
+    public static final int LEFT_PAGE_W = 599;
+    public static final int LEFT_PAGE_H = 649;
 
-    /**
-     * Calculate the appropriate scale factor to fit the book texture on screen
-     * while preserving aspect ratio and leaving visible margins.
-     *
-     * @param screenWidth Current screen width in GUI coordinates
-     * @param screenHeight Current screen height in GUI coordinates
-     * @return Scale factor (e.g., 0.75 means render at 75% of original size)
-     */
-    public static double getPanelScale(int screenWidth, int screenHeight) {
-        double maxWidth = screenWidth * MAX_WIDTH_RATIO;
-        double maxHeight = screenHeight * MAX_HEIGHT_RATIO;
+    // ── Right page safe zone (book-native) ────────────────────────────────
 
-        double scaleX = maxWidth / BOOK_TEXTURE_WIDTH;
-        double scaleY = maxHeight / BOOK_TEXTURE_HEIGHT;
+    public static final int RIGHT_PAGE_X = 844;  // 992 − 148
+    public static final int RIGHT_PAGE_Y = 213;
+    public static final int RIGHT_PAGE_W = 599;
+    public static final int RIGHT_PAGE_H = 649;
 
-        // Use the smaller scale to ensure the entire texture fits
-        return Math.min(scaleX, scaleY);
-    }
+    // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * Get the scaled render dimensions for the book panel.
-     *
-     * @param screenWidth Current screen width in GUI coordinates
-     * @param screenHeight Current screen height in GUI coordinates
-     * @return ScaledDimensions containing width and height
+     * Uniform scale factor that fits the book inside the given screen area
+     * while preserving aspect ratio.
      */
-    public static ScaledDimensions getScaledPanelSize(int screenWidth, int screenHeight) {
-        double scale = getPanelScale(screenWidth, screenHeight);
-        return new ScaledDimensions(
-                (int) Math.round(BOOK_TEXTURE_WIDTH * scale),
-                (int) Math.round(BOOK_TEXTURE_HEIGHT * scale)
+    public static double getScale(int screenW, int screenH) {
+        return Math.min(
+                (screenW * MAX_W_RATIO) / BOOK_W,
+                (screenH * MAX_H_RATIO) / BOOK_H
         );
-    }
-
-    /**
-     * Calculate the X position to center the scaled book panel on screen.
-     *
-     * @param screenWidth Current screen width in GUI coordinates
-     * @param panelWidth Scaled panel width
-     * @return Centered X coordinate
-     */
-    public static int getCenteredPanelX(int screenWidth, int panelWidth) {
-        return (screenWidth - panelWidth) / 2;
-    }
-
-    /**
-     * Calculate the Y position to center the scaled book panel on screen.
-     *
-     * @param screenHeight Current screen height in GUI coordinates
-     * @param panelHeight Scaled panel height
-     * @return Centered Y coordinate
-     */
-    public static int getCenteredPanelY(int screenHeight, int panelHeight) {
-        return (screenHeight - panelHeight) / 2;
-    }
-
-    /**
-     * Get absolute left page bounds for a given screen size.
-     * Coordinates are scaled proportionally to the panel scale.
-     */
-    public static Bounds getLeftPageBounds(int screenWidth, int screenHeight) {
-        double scale = getPanelScale(screenWidth, screenHeight);
-        ScaledDimensions panelSize = getScaledPanelSize(screenWidth, screenHeight);
-
-        int guiX = getCenteredPanelX(screenWidth, panelSize.width);
-        int guiY = getCenteredPanelY(screenHeight, panelSize.height);
-
-        return new Bounds(
-                guiX + (int) Math.round(LEFT_PAGE_X_OFFSET * scale),
-                guiY + (int) Math.round(LEFT_PAGE_Y_OFFSET * scale),
-                (int) Math.round(LEFT_PAGE_WIDTH * scale),
-                (int) Math.round(LEFT_PAGE_HEIGHT * scale)
-        );
-    }
-
-    /**
-     * Get absolute right page bounds for a given screen size.
-     * Coordinates are scaled proportionally to the panel scale.
-     */
-    public static Bounds getRightPageBounds(int screenWidth, int screenHeight) {
-        double scale = getPanelScale(screenWidth, screenHeight);
-        ScaledDimensions panelSize = getScaledPanelSize(screenWidth, screenHeight);
-
-        int guiX = getCenteredPanelX(screenWidth, panelSize.width);
-        int guiY = getCenteredPanelY(screenHeight, panelSize.height);
-
-        return new Bounds(
-                guiX + (int) Math.round(RIGHT_PAGE_X_OFFSET * scale),
-                guiY + (int) Math.round(RIGHT_PAGE_Y_OFFSET * scale),
-                (int) Math.round(RIGHT_PAGE_WIDTH * scale),
-                (int) Math.round(RIGHT_PAGE_HEIGHT * scale)
-        );
-    }
-
-    /**
-     * Container for scaled dimensions.
-     */
-    public static class ScaledDimensions {
-        public final int width;
-        public final int height;
-
-        public ScaledDimensions(int width, int height) {
-            this.width = width;
-            this.height = height;
-        }
-    }
-
-    /**
-     * Simple bounds container for GUI regions.
-     */
-    public static class Bounds {
-        public final int x;
-        public final int y;
-        public final int width;
-        public final int height;
-
-        public Bounds(int x, int y, int width, int height) {
-            this.x = x;
-            this.y = y;
-            this.width = width;
-            this.height = height;
-        }
-
-        public boolean contains(double mouseX, double mouseY) {
-            return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
-        }
     }
 }

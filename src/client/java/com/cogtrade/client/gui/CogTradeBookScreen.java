@@ -5,41 +5,19 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.stream.Collectors;
 
-/**
- * CogTrade ana kitap GUI ekranı.
- *
- * <h3>Navigasyon akışı</h3>
- * <pre>
- *  ┌─ Üst sekme çubuğu ─────────────────────────────────────────┐
- *  │  [tab1▣] [tab2] [tab3]              [tab4] [tab5]          │
- *  ├─ Sol sayfa ──────────────┬─ Sağ sayfa ─────────────────────┤
- *  │                          │                                  │
- *  │  MENÜ MODU               │  (boş veya dekoratif)           │
- *  │  ───────                 │                                  │
- *  │     PAZAR        ← büyük │                                  │
- *  │     İHALELER     ← bold  │                                  │
- *  │     İLANLARIM    ← metin │                                  │
- *  │     TAKASLAR             │                                  │
- *  │     ÖDEME YAP            │                                  │
- *  │                          │                                  │
- *  ├──────────────────────────┤──────────────────────────────────┤
- *  │  İÇERİK MODU             │                                  │
- *  │  ─────────               │  (seçilen sayfanın içeriği)     │
- *  │  ← Geri                  │                                  │
- *  │  Pazar                   │                                  │
- *  └──────────────────────────┴──────────────────────────────────┘
- * </pre>
- *
- * <p>LANDS ve TELEPORT'un alt öğesi yoktur; bu sekmeler seçilince
- * direkt içerik moduna geçilir (menü adımı atlanır).</p>
- */
 @Environment(EnvType.CLIENT)
 public class CogTradeBookScreen extends Screen {
 
@@ -52,50 +30,46 @@ public class CogTradeBookScreen extends Screen {
     private static final Identifier TAB_ACTIVE_TEX =
             new Identifier(CogTrade.MOD_ID, "textures/gui/tab-active.png");
 
-    // ── Renkler (0xRRGGBB) ────────────────────────────────────────────────
+    // ── Renkler ───────────────────────────────────────────────────────────
 
-    /** Büyük menüde normal öğe rengi: koyu kahve (krem sayfada okunaklı). */
     private static final int COLOR_MENU_NORMAL = 0x2C1A08;
-    /** Büyük menüde fare üzerindeyken: amber/altın. */
     private static final int COLOR_MENU_HOVER  = 0x9B6200;
-    /** Geri butonu normal. */
     private static final int COLOR_BACK        = 0x7A5B2A;
-    /** Geri butonu hover. */
     private static final int COLOR_BACK_HOVER  = 0x2C1A08;
-    /** Geçerli sayfa adı (geri butonunun altındaki küçük başlık). */
     private static final int COLOR_SUBTITLE    = 0x5A3F10;
+    private static final int COLOR_LABEL       = 0x3D2200;
+    private static final int COLOR_DIM         = 0x7A5B2A;
 
     // ── Metin ölçekleri ───────────────────────────────────────────────────
 
-    /** Büyük menü öğeleri için metin büyütme katsayısı. */
-    private static final float MENU_SCALE = 2.5f;
-    /** Öğeler arası boşluk katsayısı (font yüksekliğinin katı). */
-    private static final float MENU_LINE_RATIO = 1.9f;
-    /** Geri butonu metin katsayısı. */
-    private static final float BACK_SCALE = 1.4f;
+    private static final float MENU_SCALE       = 2.5f;
+    private static final float MENU_LINE_RATIO  = 1.9f;
+    private static final float BACK_SCALE       = 1.4f;
 
-    // ── Durum (State) ─────────────────────────────────────────────────────
+    // ── Navigasyon state ──────────────────────────────────────────────────
 
-    /** Şu anda aktif olan ana sekme. */
     private CogTradeMainTab activeTab    = CogTradeMainTab.STORE;
-    /**
-     * Seçili alt sayfa. {@code null} iken menü gösterilir;
-     * {@code null} olmayan değerde ilgili içerik sayfası gösterilir.
-     */
     private CogTradeSubTab  activeSubTab = null;
-    /**
-     * {@code true} → içerik modundayız (alt sayfa açık veya alt öğesi
-     * olmayan sekme seçili).
-     * {@code false} → menü modundayız (kullanıcı alt öğe seçmedi).
-     */
-    private boolean inSubPage = false;
+    private boolean         inSubPage    = false;
 
-    // ── Layout (init'te hesaplanır) ────────────────────────────────────────
+    // ── Ödeme sayfası state ───────────────────────────────────────────────
+
+    private String         selectedPlayer     = null;
+    private int            playerScrollOffset = 0;
+    private List<String>   allPlayers         = new ArrayList<>();
+    private List<String>   filteredPlayers    = new ArrayList<>();
+
+    // Widget referansları (sadece ODEME_YAP sayfasındayken geçerli)
+    private TextFieldWidget searchBox   = null;
+    private TextFieldWidget amountField = null;
+    private TextFieldWidget noteField   = null;
+
+    // ── Layout ────────────────────────────────────────────────────────────
 
     private int    guiX, guiY;
     private double scale;
 
-    // ──────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
 
     public CogTradeBookScreen() {
         super(Text.translatable("gui.cogtrade.book"));
@@ -114,87 +88,186 @@ public class CogTradeBookScreen extends Screen {
         this.guiY = (this.height - guiH) / 2;
 
         // Alt öğesi olmayan sekmeler direkt içerik modunda başlar
-        this.inSubPage = CogTradeSubTab.getSubTabsFor(activeTab).isEmpty();
+        if (!inSubPage) {
+            inSubPage = CogTradeSubTab.getSubTabsFor(activeTab).isEmpty();
+        }
+
+        // Ödeme sayfası widget'larını oluştur
+        searchBox = null; amountField = null; noteField = null;
+        if (inSubPage && activeSubTab == CogTradeSubTab.ODEME_YAP) {
+            initPaymentWidgets();
+        }
+    }
+
+    // ── Ödeme sayfası widget kurulumu ────────────────────────────────────
+
+    private void initPaymentWidgets() {
+        int lpX = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X);
+        int lpY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y);
+        int lpW = sc(CogTradeGuiLayout.LEFT_PAGE_W);
+
+        int rpX = guiX + sc(CogTradeGuiLayout.RIGHT_PAGE_X);
+        int rpY = guiY + sc(CogTradeGuiLayout.RIGHT_PAGE_Y);
+        int rpW = sc(CogTradeGuiLayout.RIGHT_PAGE_W);
+
+        // Sol: arama kutusu
+        searchBox = new TextFieldWidget(textRenderer, lpX, lpY, lpW, 18, Text.empty());
+        searchBox.setMaxLength(32);
+        searchBox.setPlaceholder(Text.literal("Oyuncu ara..."));
+        searchBox.setChangedListener(q -> {
+            String lq = q.toLowerCase(Locale.ROOT);
+            filteredPlayers = allPlayers.stream()
+                    .filter(n -> n.toLowerCase(Locale.ROOT).contains(lq))
+                    .collect(Collectors.toList());
+            playerScrollOffset = 0;
+        });
+        addDrawableChild(searchBox);
+
+        // Oyuncu listesini yükle
+        allPlayers = getOnlinePlayers();
+        filteredPlayers = new ArrayList<>(allPlayers);
+        playerScrollOffset = 0;
+        selectedPlayer = null;
+
+        // Sağ: miktar alanı
+        amountField = new TextFieldWidget(textRenderer, rpX, rpY + 55, 120, 18, Text.empty());
+        amountField.setMaxLength(12);
+        amountField.setPlaceholder(Text.literal("Miktar"));
+        addDrawableChild(amountField);
+
+        // Sağ: hızlı miktar butonları (100 / 200 / 500 / 1000)
+        int[] amounts = {100, 200, 500, 1000};
+        int qw = (rpW - 18) / 4;
+        for (int i = 0; i < amounts.length; i++) {
+            final int amt = amounts[i];
+            addDrawableChild(ButtonWidget.builder(
+                    Text.literal(String.valueOf(amt)),
+                    btn -> amountField.setText(String.valueOf(amt))
+            ).dimensions(rpX + i * (qw + 6), rpY + 85, qw, 18).build());
+        }
+
+        // Sağ: not alanı
+        noteField = new TextFieldWidget(textRenderer, rpX, rpY + 140, rpW, 18, Text.empty());
+        noteField.setMaxLength(100);
+        noteField.setPlaceholder(Text.literal("Not (opsiyonel, maks. 100 karakter)"));
+        addDrawableChild(noteField);
+
+        // Sağ: gönder butonu
+        int sbW = 110;
+        addDrawableChild(ButtonWidget.builder(
+                Text.literal("Para Gönder"),
+                btn -> sendPayment()
+        ).dimensions(rpX + (rpW - sbW) / 2, rpY + 178, sbW, 20).build());
     }
 
     // ── Rendering ──────────────────────────────────────────────────────────
 
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        this.renderBackground(ctx);
+        renderBackground(ctx);
 
-        // 1. Kitap arkaplanı
         draw(ctx, BOOK_TEX, 0, 0, CogTradeGuiLayout.BOOK_W, CogTradeGuiLayout.BOOK_H);
 
-        // 2. Üst sekme çubuğu (arkaplan + ikon)
         for (CogTradeMainTab tab : CogTradeMainTab.values()) {
-            draw(ctx,
-                    tab == activeTab ? TAB_ACTIVE_TEX : TAB_TEX,
+            draw(ctx, tab == activeTab ? TAB_ACTIVE_TEX : TAB_TEX,
                     tab.tabX, tab.tabY, tab.tabW, tab.tabH);
             draw(ctx, tab.iconTexture,
                     tab.iconX, tab.iconY, tab.iconW, tab.iconH);
         }
 
-        // 3. Sol sayfa içeriği
         if (inSubPage) {
             renderBackButton(ctx, mouseX, mouseY);
-            // TODO: ilgili içerik sayfasını sağ sayfaya render et
+            if (activeSubTab == CogTradeSubTab.ODEME_YAP) {
+                renderPlayerList(ctx, mouseX, mouseY);
+                renderPaymentLabels(ctx);
+            }
         } else {
             renderBigMenu(ctx, mouseX, mouseY);
         }
 
-        super.render(ctx, mouseX, mouseY, delta);
+        super.render(ctx, mouseX, mouseY, delta); // widget'ları çizer
     }
 
-    // ── Büyük menü ────────────────────────────────────────────────────────
+    // ── Oyuncu listesi (sol sayfa) ────────────────────────────────────────
 
-    /**
-     * Sol sayfa safe zone'una, alt öğeleri dikey+yatay ortalanmış,
-     * büyük ve kalın görünümde çizer.
-     * Fare üzerindeyken öğe rengi değişir.
-     */
-    private void renderBigMenu(DrawContext ctx, int mouseX, int mouseY) {
-        List<CogTradeSubTab> subs = CogTradeSubTab.getSubTabsFor(activeTab);
-        if (subs.isEmpty()) return; // LANDS / TELEPORT — bu moda giremez
+    private void renderPlayerList(DrawContext ctx, int mouseX, int mouseY) {
+        int lpX    = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X);
+        int listY  = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 24; // arama kutusunun altı
+        int lpW    = sc(CogTradeGuiLayout.LEFT_PAGE_W);
+        int lpH    = sc(CogTradeGuiLayout.LEFT_PAGE_H) - 24;
+        int itemH  = 14;
+        int visible = lpH / itemH;
 
-        MenuGeometry geo = computeMenuGeometry(subs);
+        int maxScroll = Math.max(0, filteredPlayers.size() - visible);
+        playerScrollOffset = Math.min(playerScrollOffset, maxScroll);
 
-        for (int i = 0; i < subs.size(); i++) {
-            String text  = subs.get(i).label.toUpperCase(Locale.forLanguageTag("tr"));
-            int    textW = (int)(this.textRenderer.getWidth(text) * MENU_SCALE);
-            int    itemX = Math.max(geo.szX, geo.szX + (geo.szW - textW) / 2);
-            int    itemY = geo.startY + i * geo.lineH;
+        int y = listY;
+        for (int i = playerScrollOffset; i < Math.min(filteredPlayers.size(), playerScrollOffset + visible); i++) {
+            String name      = filteredPlayers.get(i);
+            boolean selected = name.equals(selectedPlayer);
+            boolean hovered  = !selected
+                    && mouseX >= lpX && mouseX < lpX + lpW - 5
+                    && mouseY >= y   && mouseY < y + itemH;
 
-            boolean hovered = mouseX >= geo.szX && mouseX < geo.szX + geo.szW
-                           && mouseY >= itemY    && mouseY < itemY + geo.lineH;
+            if (selected) ctx.fill(lpX, y, lpX + lpW - 5, y + itemH, 0x44AA6600);
+            else if (hovered) ctx.fill(lpX, y, lpX + lpW - 5, y + itemH, 0x22AA6600);
 
-            drawText(ctx, text, itemX, itemY,
-                    hovered ? COLOR_MENU_HOVER : COLOR_MENU_NORMAL,
-                    MENU_SCALE);
+            ctx.drawText(textRenderer,
+                    Text.literal((selected ? "▶ " : "  ") + name),
+                    lpX + 4, y + 3,
+                    selected ? COLOR_LABEL : COLOR_DIM, false);
+            y += itemH;
+        }
+
+        // Boş durum mesajı
+        if (filteredPlayers.isEmpty()) {
+            String msg = allPlayers.isEmpty() ? "Çevrimiçi oyuncu yok" : "Sonuç bulunamadı";
+            ctx.drawText(textRenderer, Text.literal(msg), lpX + 6, listY + 8, COLOR_DIM, false);
+        }
+
+        // Kaydırma çubuğu
+        if (filteredPlayers.size() > visible && visible > 0) {
+            int sbX    = lpX + lpW - 4;
+            int thumbH = Math.max(8, lpH * visible / filteredPlayers.size());
+            int thumbY = maxScroll > 0
+                    ? listY + (lpH - thumbH) * playerScrollOffset / maxScroll
+                    : listY;
+            ctx.fill(sbX, listY, sbX + 3, listY + lpH, 0x22000000);
+            ctx.fill(sbX, thumbY, sbX + 3, thumbY + thumbH, 0xBB9B6200);
         }
     }
 
-    // ── Geri butonu ───────────────────────────────────────────────────────
+    // ── Ödeme formu etiketleri (sağ sayfa) ───────────────────────────────
 
-    /**
-     * Sol sayfa safe zone'unun sol üstüne "← Geri" butonunu,
-     * altına da aktif alt sayfanın adını çizer.
-     */
-    private void renderBackButton(DrawContext ctx, int mouseX, int mouseY) {
-        int btnX = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X) + 10;
-        int btnY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 12;
+    private void renderPaymentLabels(DrawContext ctx) {
+        int rpX = guiX + sc(CogTradeGuiLayout.RIGHT_PAGE_X);
+        int rpY = guiY + sc(CogTradeGuiLayout.RIGHT_PAGE_Y);
+        int rpW = sc(CogTradeGuiLayout.RIGHT_PAGE_W);
 
-        boolean hovered = isBackHovered(mouseX, mouseY);
-        drawText(ctx, "\u2190 Geri", btnX, btnY,
-                hovered ? COLOR_BACK_HOVER : COLOR_BACK,
-                BACK_SCALE);
+        // Alıcı
+        if (selectedPlayer != null) {
+            ctx.drawText(textRenderer,
+                    Text.literal("Alıcı: " + selectedPlayer),
+                    rpX, rpY + 8, COLOR_LABEL, false);
+        } else {
+            ctx.drawText(textRenderer,
+                    Text.literal("← Oyuncu seçin"),
+                    rpX, rpY + 8, COLOR_DIM, false);
+        }
 
-        // Aktif alt sayfa adı (küçük başlık)
-        if (activeSubTab != null) {
-            int scaledH = (int)(this.textRenderer.fontHeight * BACK_SCALE);
-            drawText(ctx, activeSubTab.label,
-                    btnX, btnY + scaledH + 5,
-                    COLOR_SUBTITLE, BACK_SCALE);
+        // Miktar etiketi + "coin" suffix
+        ctx.drawText(textRenderer, Text.literal("Miktar:"), rpX, rpY + 40, COLOR_LABEL, false);
+        ctx.drawText(textRenderer, Text.literal("coin"),
+                rpX + 127, rpY + 58, COLOR_DIM, false);
+
+        // Not etiketi + karakter sayacı
+        ctx.drawText(textRenderer, Text.literal("Not (opsiyonel):"), rpX, rpY + 125, COLOR_LABEL, false);
+        if (noteField != null) {
+            int len     = noteField.getText().length();
+            String ctr  = len + "/100";
+            int ctrX    = rpX + rpW - textRenderer.getWidth(ctr);
+            ctx.drawText(textRenderer, Text.literal(ctr),
+                    ctrX, rpY + 125, len > 90 ? 0xAA2200 : COLOR_DIM, false);
         }
     }
 
@@ -204,7 +277,7 @@ public class CogTradeBookScreen extends Screen {
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (button != 0) return super.mouseClicked(mouseX, mouseY, button);
 
-        // 1. Üst sekme
+        // 1. Üst sekmeler
         for (CogTradeMainTab tab : CogTradeMainTab.values()) {
             if (tabHit(tab, mouseX, mouseY)) {
                 setActiveTab(tab);
@@ -212,21 +285,39 @@ public class CogTradeBookScreen extends Screen {
             }
         }
 
-        // 2. İçerik modundayken geri butonu
+        // 2. Geri butonu
         if (inSubPage && isBackHovered(mouseX, mouseY)) {
             goBack();
             return true;
         }
 
-        // 3. Menü modundayken büyük menü öğesi
+        // 3. Ödeme sayfası — oyuncu listesi tıklaması
+        if (inSubPage && activeSubTab == CogTradeSubTab.ODEME_YAP) {
+            int lpX   = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X);
+            int listY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 24;
+            int lpW   = sc(CogTradeGuiLayout.LEFT_PAGE_W) - 5;
+            int lpH   = sc(CogTradeGuiLayout.LEFT_PAGE_H) - 24;
+            int itemH = 14;
+
+            if (mouseX >= lpX && mouseX < lpX + lpW
+                    && mouseY >= listY && mouseY < listY + lpH) {
+                int index = playerScrollOffset + (int)((mouseY - listY) / itemH);
+                if (index >= 0 && index < filteredPlayers.size()) {
+                    selectedPlayer = filteredPlayers.get(index);
+                    return true;
+                }
+            }
+        }
+
+        // 4. Büyük menü tıklaması
         if (!inSubPage) {
             List<CogTradeSubTab> subs = CogTradeSubTab.getSubTabsFor(activeTab);
             if (!subs.isEmpty()) {
                 MenuGeometry geo = computeMenuGeometry(subs);
                 for (int i = 0; i < subs.size(); i++) {
-                    int itemY = geo.startY + i * geo.lineH;
+                    int iy = geo.startY + i * geo.lineH;
                     if (mouseX >= geo.szX && mouseX < geo.szX + geo.szW
-                            && mouseY >= itemY && mouseY < itemY + geo.lineH) {
+                            && mouseY >= iy && mouseY < iy + geo.lineH) {
                         setSubPage(subs.get(i));
                         return true;
                     }
@@ -237,137 +328,176 @@ public class CogTradeBookScreen extends Screen {
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double amount) {
+        if (inSubPage && activeSubTab == CogTradeSubTab.ODEME_YAP) {
+            int lpX   = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X);
+            int listY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 24;
+            int lpW   = sc(CogTradeGuiLayout.LEFT_PAGE_W);
+            int lpH   = sc(CogTradeGuiLayout.LEFT_PAGE_H) - 24;
+            if (mouseX >= lpX && mouseX < lpX + lpW
+                    && mouseY >= listY && mouseY < listY + lpH) {
+                int visible   = lpH / 14;
+                int maxScroll = Math.max(0, filteredPlayers.size() - visible);
+                playerScrollOffset = Math.max(0, Math.min(
+                        playerScrollOffset - (int) Math.signum(amount), maxScroll));
+                return true;
+            }
+        }
+        return super.mouseScrolled(mouseX, mouseY, amount);
+    }
+
     // ── Durum yönetimi ────────────────────────────────────────────────────
 
-    /** Ana sekmeyi değiştirir; alt öğesi varsa menüye, yoksa içeriğe geçer. */
     private void setActiveTab(CogTradeMainTab tab) {
         this.activeTab    = tab;
         this.activeSubTab = null;
         this.inSubPage    = CogTradeSubTab.getSubTabsFor(tab).isEmpty();
+        this.init(this.client, this.width, this.height);
     }
 
-    /** Verilen alt sayfayı açar. */
     private void setSubPage(CogTradeSubTab sub) {
         this.activeSubTab = sub;
         this.inSubPage    = true;
+        this.init(this.client, this.width, this.height);
     }
 
-    /** Alt sayfadan geri dönüp menüyü yeniden gösterir. */
     private void goBack() {
         this.activeSubTab = null;
         this.inSubPage    = false;
+        this.init(this.client, this.width, this.height);
     }
 
-    // ── Geometri hesabı ───────────────────────────────────────────────────
+    // ── Para gönderme ─────────────────────────────────────────────────────
 
-    /**
-     * Büyük menü öğelerinin ekran koordinatlarını hesaplar.
-     * Hem render hem de hit-detection bu değerleri kullanır
-     * (kod tekrarı önlenir).
-     */
+    private void sendPayment() {
+        if (selectedPlayer == null || selectedPlayer.isEmpty()) return;
+        if (amountField == null || amountField.getText().isBlank()) return;
+
+        long amount;
+        try {
+            amount = Long.parseLong(amountField.getText().trim());
+            if (amount <= 0) return;
+        } catch (NumberFormatException e) {
+            return;
+        }
+
+        String note = noteField != null ? noteField.getText().trim() : "";
+        StringBuilder cmd = new StringBuilder("pay ")
+                .append(selectedPlayer).append(" ").append(amount);
+        if (!note.isEmpty()) cmd.append(" ").append(note);
+
+        assert client != null && client.player != null;
+        client.player.networkHandler.sendCommand(cmd.toString());
+
+        // Action bar bildirim
+        client.player.sendMessage(
+                Text.literal("§a" + selectedPlayer + " adlı oyuncuya §e" + amount + " coin §agönderildi!"),
+                true);
+
+        close();
+    }
+
+    // ── Oyuncu listesi yükleme ────────────────────────────────────────────
+
+    private List<String> getOnlinePlayers() {
+        if (client == null || client.getNetworkHandler() == null) return List.of();
+        String self = client.player != null ? client.player.getGameProfile().getName() : "";
+        return client.getNetworkHandler().getPlayerList().stream()
+                .map(PlayerListEntry::getProfile)
+                .map(com.mojang.authlib.GameProfile::getName)
+                .filter(n -> !n.equals(self))
+                .sorted(Comparator.naturalOrder())
+                .collect(Collectors.toList());
+    }
+
+    // ── Büyük menü ────────────────────────────────────────────────────────
+
+    private void renderBigMenu(DrawContext ctx, int mouseX, int mouseY) {
+        List<CogTradeSubTab> subs = CogTradeSubTab.getSubTabsFor(activeTab);
+        if (subs.isEmpty()) return;
+
+        MenuGeometry geo = computeMenuGeometry(subs);
+        for (int i = 0; i < subs.size(); i++) {
+            String text  = subs.get(i).label.toUpperCase(Locale.forLanguageTag("tr"));
+            int    textW = (int)(textRenderer.getWidth(text) * MENU_SCALE);
+            int    itemX = Math.max(geo.szX, geo.szX + (geo.szW - textW) / 2);
+            int    itemY = geo.startY + i * geo.lineH;
+            boolean hov  = mouseX >= geo.szX && mouseX < geo.szX + geo.szW
+                        && mouseY >= itemY    && mouseY < itemY + geo.lineH;
+            drawText(ctx, text, itemX, itemY,
+                    hov ? COLOR_MENU_HOVER : COLOR_MENU_NORMAL, MENU_SCALE);
+        }
+    }
+
+    // ── Geri butonu ───────────────────────────────────────────────────────
+
+    private void renderBackButton(DrawContext ctx, int mouseX, int mouseY) {
+        int btnX = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X) + 10;
+        int btnY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 12;
+        boolean hov = isBackHovered(mouseX, mouseY);
+        drawText(ctx, "\u2190 Geri", btnX, btnY,
+                hov ? COLOR_BACK_HOVER : COLOR_BACK, BACK_SCALE);
+        if (activeSubTab != null) {
+            int h = (int)(textRenderer.fontHeight * BACK_SCALE);
+            drawText(ctx, activeSubTab.label, btnX, btnY + h + 5, COLOR_SUBTITLE, BACK_SCALE);
+        }
+    }
+
+    // ── Geometri yardımcısı ───────────────────────────────────────────────
+
     private MenuGeometry computeMenuGeometry(List<CogTradeSubTab> subs) {
         int szX = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X);
         int szY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y);
         int szW = sc(CogTradeGuiLayout.LEFT_PAGE_W);
         int szH = sc(CogTradeGuiLayout.LEFT_PAGE_H);
-
-        // Tek satır yüksekliği: font yüksekliği × ölçek × boşluk katsayısı
-        int scaledFontH = (int)(this.textRenderer.fontHeight * MENU_SCALE);
-        int lineH       = (int)(scaledFontH * MENU_LINE_RATIO);
-
-        // Tüm liste yüksekliği: (n-1) aralık + son öğe font yüksekliği
-        int totalH = (subs.size() - 1) * lineH + scaledFontH;
-
-        // Dikey ortalama
-        int startY = szY + Math.max(0, (szH - totalH) / 2);
-
-        return new MenuGeometry(szX, szY, szW, szH, lineH, startY);
+        int fH  = (int)(textRenderer.fontHeight * MENU_SCALE);
+        int lH  = (int)(fH * MENU_LINE_RATIO);
+        int tot = (subs.size() - 1) * lH + fH;
+        return new MenuGeometry(szX, szY, szW, szH, lH, szY + Math.max(0, (szH - tot) / 2));
     }
 
-    /** Büyük menünün geometrisini taşıyan değer nesnesi. */
     private static final class MenuGeometry {
-        final int szX, szY, szW, szH;  // safe zone ekran koordinatları
-        final int lineH;               // satır yüksekliği (px)
-        final int startY;              // ilk öğenin Y koordinatı
-
+        final int szX, szY, szW, szH, lineH, startY;
         MenuGeometry(int szX, int szY, int szW, int szH, int lineH, int startY) {
-            this.szX    = szX;
-            this.szY    = szY;
-            this.szW    = szW;
-            this.szH    = szH;
-            this.lineH  = lineH;
-            this.startY = startY;
+            this.szX=szX; this.szY=szY; this.szW=szW; this.szH=szH;
+            this.lineH=lineH; this.startY=startY;
         }
     }
 
-    // ── Yardımcılar ────────────────────────────────────────────────────────
+    // ── Düşük seviye yardımcılar ──────────────────────────────────────────
 
-    /** Farenin geri butonu üzerinde olup olmadığını kontrol eder. */
-    private boolean isBackHovered(double mouseX, double mouseY) {
-        int btnX = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X) + 10;
-        int btnY = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 12;
-        int btnW = (int)(this.textRenderer.getWidth("\u2190 Geri") * BACK_SCALE) + 8;
-        int btnH = (int)(this.textRenderer.fontHeight * BACK_SCALE) + 4;
-        return mouseX >= btnX && mouseX < btnX + btnW
-            && mouseY >= btnY && mouseY < btnY + btnH;
+    private boolean isBackHovered(double mx, double my) {
+        int bx = guiX + sc(CogTradeGuiLayout.LEFT_PAGE_X) + 10;
+        int by = guiY + sc(CogTradeGuiLayout.LEFT_PAGE_Y) + 12;
+        int bw = (int)(textRenderer.getWidth("\u2190 Geri") * BACK_SCALE) + 8;
+        int bh = (int)(textRenderer.fontHeight * BACK_SCALE) + 4;
+        return mx >= bx && mx < bx + bw && my >= by && my < by + bh;
     }
 
-    /** Book-native değeri ekran piksellerine çevirir. */
-    private int sc(int bookValue) {
-        return (int) Math.round(bookValue * scale);
-    }
+    private int sc(int v) { return (int) Math.round(v * scale); }
 
-    /**
-     * Bir texture'ı book-native koordinatlarda çizer.
-     * NineSliceRenderer UV-tabanlı drawFullTexture kullanır
-     * (matrix scaling yok → köşe artefaktı yok).
-     */
     private void draw(DrawContext ctx, Identifier tex,
-                      int bookX, int bookY,
-                      int nativeW, int nativeH) {
-        NineSliceRenderer.drawFullTexture(
-                ctx, tex,
-                guiX + sc(bookX),
-                guiY + sc(bookY),
-                sc(nativeW),
-                sc(nativeH),
-                nativeW, nativeH
-        );
+                      int bx, int by, int nw, int nh) {
+        NineSliceRenderer.drawFullTexture(ctx, tex,
+                guiX + sc(bx), guiY + sc(by), sc(nw), sc(nh), nw, nh);
     }
 
-    /**
-     * Metni verilen ekran konumuna ölçeklenmiş olarak çizer.
-     *
-     * @param screenX  ekran X (piksel)
-     * @param screenY  ekran Y (piksel)
-     * @param color    0xRRGGBB renk
-     * @param scale    büyütme katsayısı (1.0 = Minecraft varsayılan font)
-     */
     private void drawText(DrawContext ctx, String text,
-                          int screenX, int screenY,
-                          int color, float scale) {
+                          int sx, int sy, int color, float s) {
         MatrixStack m = ctx.getMatrices();
         m.push();
-        m.translate(screenX, screenY, 0);
-        m.scale(scale, scale, 1f);
-        ctx.drawText(this.textRenderer, Text.literal(text), 0, 0, color, false);
+        m.translate(sx, sy, 0);
+        m.scale(s, s, 1f);
+        ctx.drawText(textRenderer, Text.literal(text), 0, 0, color, false);
         m.pop();
     }
 
-    /** Farenin üst sekme tıklama alanında olup olmadığını kontrol eder. */
-    private boolean tabHit(CogTradeMainTab tab, double mouseX, double mouseY) {
-        int x = guiX + sc(tab.tabX);
-        int y = guiY + sc(tab.tabY);
-        int w = sc(tab.tabW);
-        int h = sc(tab.tabH);
-        return mouseX >= x && mouseX < x + w
-            && mouseY >= y && mouseY < y + h;
+    private boolean tabHit(CogTradeMainTab tab, double mx, double my) {
+        int x = guiX + sc(tab.tabX), y = guiY + sc(tab.tabY);
+        int w = sc(tab.tabW),        h = sc(tab.tabH);
+        return mx >= x && mx < x + w && my >= y && my < y + h;
     }
 
-    // ── Screen davranışı ───────────────────────────────────────────────────
-
-    @Override
-    public boolean shouldPause() {
-        return false;
-    }
+    @Override public boolean shouldPause() { return false; }
 }

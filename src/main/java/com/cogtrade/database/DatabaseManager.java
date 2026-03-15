@@ -166,8 +166,25 @@ public class DatabaseManager {
             stmt.execute(directTradesTable);
         }
 
+        // Migration: transactions tablosuna note sütunu ekle (yoksa)
+        migrateAddTransactionNote();
+
         // Eski player_shops.chest_positions verisini trade_depots'a taşı (tek seferlik migration)
         migrateDepotsFromPlayerShops();
+    }
+
+    /**
+     * transactions tablosuna {@code note} sütununu ekler.
+     * Sütun zaten varsa SQLite hata fırlatır; bu sessizce görmezden gelinir.
+     */
+    private static void migrateAddTransactionNote() {
+        try {
+            connection.createStatement()
+                    .execute("ALTER TABLE transactions ADD COLUMN note TEXT");
+            CogTrade.LOGGER.info("transactions.note sütunu eklendi.");
+        } catch (SQLException e) {
+            // Sütun zaten mevcut — normal durum, görmezden gel
+        }
     }
 
     /**

@@ -44,24 +44,41 @@ public class PlayerEconomy {
         }
     }
 
+    /** Not içermeyen transfer (geriye dönük uyumluluk). */
     public static boolean transfer(UUID from, UUID to, double amount) {
+        return transfer(from, to, amount, null);
+    }
+
+    /**
+     * Oyuncular arası para transferi.
+     *
+     * @param note Opsiyonel açıklama (max 100 karakter); {@code null} veya boş ise kaydedilmez.
+     */
+    public static boolean transfer(UUID from, UUID to, double amount, String note) {
         if (amount <= 0) return false;
         if (getBalance(from) < amount) return false;
+
+        // Notu güvenli hale getir: null → null, boş → null, uzunsa kırp
+        String safeNote = (note == null || note.isBlank()) ? null
+                        : (note.length() > 100 ? note.substring(0, 100) : note);
 
         Connection conn = DatabaseManager.getConnection();
         try {
             conn.setAutoCommit(false);
 
             setBalance(from, getBalance(from) - amount);
-            setBalance(to, getBalance(to) + amount);
+            setBalance(to,   getBalance(to)   + amount);
 
-            String logSql = "INSERT INTO transactions (sender_uuid, receiver_uuid, amount, reason, timestamp) VALUES (?, ?, ?, ?, ?)";
+            String logSql = "INSERT INTO transactions " +
+                    "(sender_uuid, receiver_uuid, amount, reason, note, timestamp) " +
+                    "VALUES (?, ?, ?, ?, ?, ?)";
             try (PreparedStatement stmt = conn.prepareStatement(logSql)) {
                 stmt.setString(1, from.toString());
                 stmt.setString(2, to.toString());
                 stmt.setDouble(3, amount);
                 stmt.setString(4, "transfer");
-                stmt.setLong(5, System.currentTimeMillis());
+                stmt.setString(5, safeNote);        // NULL olabilir
+                stmt.setLong(6, System.currentTimeMillis());
                 stmt.executeUpdate();
             }
 

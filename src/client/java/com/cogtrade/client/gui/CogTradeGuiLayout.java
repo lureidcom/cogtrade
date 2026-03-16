@@ -10,8 +10,9 @@ package com.cogtrade.client.gui;
  * <h3>Safe-zone derivation</h3>
  * Figma absolute → book-relative:  {@code bookX = figmaX − 148},  {@code bookY = figmaY}
  * <pre>
- *   Left  page safe zone : figma x=327  y=213  w=599  h=649
- *   Right page safe zone : figma x=992  y=213  w=599  h=649
+ *   Left  page safe zone (Figma) : figma x=327  y=213  w=599  h=649
+ *   Right page safe zone (Figma) : figma x=992  y=213  w=599  h=649
+ *   Internal padding applied     : 20px on every side
  * </pre>
  */
 public class CogTradeGuiLayout {
@@ -27,19 +28,19 @@ public class CogTradeGuiLayout {
     private static final double MAX_W_RATIO = 0.90;
     private static final double MAX_H_RATIO = 0.90;
 
-    // ── Left page safe zone (book-native) ─────────────────────────────────
+    // ── Left page safe zone (book-native, 20px internal padding applied) ──
 
-    public static final int LEFT_PAGE_X = 179;   // 327 − 148
-    public static final int LEFT_PAGE_Y = 213;
-    public static final int LEFT_PAGE_W = 599;
-    public static final int LEFT_PAGE_H = 649;
+    public static final int LEFT_PAGE_X = 199;   // 327 − 148 + 20
+    public static final int LEFT_PAGE_Y = 233;   // 213 + 20
+    public static final int LEFT_PAGE_W = 559;   // 599 − 40 (20px her iki yan)
+    public static final int LEFT_PAGE_H = 609;   // 649 − 40 (20px üst + alt)
 
-    // ── Right page safe zone (book-native) ────────────────────────────────
+    // ── Right page safe zone (book-native, 20px internal padding applied) ─
 
-    public static final int RIGHT_PAGE_X = 844;  // 992 − 148
-    public static final int RIGHT_PAGE_Y = 213;
-    public static final int RIGHT_PAGE_W = 599;
-    public static final int RIGHT_PAGE_H = 649;
+    public static final int RIGHT_PAGE_X = 864;  // 992 − 148 + 20
+    public static final int RIGHT_PAGE_Y = 233;  // 213 + 20
+    public static final int RIGHT_PAGE_W = 559;  // 599 − 40
+    public static final int RIGHT_PAGE_H = 609;  // 649 − 40
 
     // ─────────────────────────────────────────────────────────────────────
 

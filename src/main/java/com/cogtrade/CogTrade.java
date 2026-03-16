@@ -591,6 +591,81 @@ public class CogTrade implements ModInitializer {
                     });
                 });
 
+        // ── Büyü Marketi: satın alma ─────────────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.BuyEffectPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    String effectId      = buf.readString();
+                    int    amplifier     = buf.readInt();
+                    int    durationTicks = buf.readInt();
+                    server.execute(() -> {
+                        com.cogtrade.market.EffectMarketEntry entry =
+                                com.cogtrade.market.EffectMarketRegistry.find(effectId);
+                        if (entry == null) {
+                            player.sendMessage(Text.literal("§cGeçersiz büyü!"));
+                            return;
+                        }
+                        if (amplifier < 0 || amplifier > entry.maxAmplifier()) {
+                            player.sendMessage(Text.literal("§cGeçersiz seviye!"));
+                            return;
+                        }
+                        int durationIndex = -1;
+                        int[] ticks = com.cogtrade.market.EffectMarketRegistry.DURATION_TICKS;
+                        for (int i = 0; i < ticks.length; i++) {
+                            if (ticks[i] == durationTicks) { durationIndex = i; break; }
+                        }
+                        if (durationIndex == -1) {
+                            player.sendMessage(Text.literal("§cGeçersiz süre!"));
+                            return;
+                        }
+                        long price   = com.cogtrade.market.EffectMarketRegistry.calcPrice(
+                                entry, amplifier, durationIndex);
+                        double balance = PlayerEconomy.getBalance(player.getUuid());
+                        if (balance < price) {
+                            player.sendMessage(Text.literal("§cYetersiz bakiye! Gereken: "
+                                    + price + " coin, Mevcut: "
+                                    + String.format("%.0f", balance) + " coin"));
+                            return;
+                        }
+                        PlayerEconomy.setBalance(player.getUuid(), balance - price);
+                        PlayerEconomy.recordDailySpent(player.getUuid(), price);
+                        String[] romans = {"I", "II", "III", "IV", "V"};
+                        String levelLabel = romans[Math.min(amplifier, 4)];
+                        String durLabelRec = com.cogtrade.market.EffectMarketRegistry.DURATION_LABELS[durationIndex];
+                        PlayerEconomy.recordEffectPurchase(player.getUuid(), price,
+                                entry.displayName() + " " + levelLabel + " - " + durLabelRec);
+                        net.minecraft.entity.effect.StatusEffect effect =
+                                net.minecraft.registry.Registries.STATUS_EFFECT.get(
+                                        new net.minecraft.util.Identifier(effectId));
+                        if (effect == null) {
+                            player.sendMessage(Text.literal("§cEfekt bulunamadı!"));
+                            return;
+                        }
+                        player.addStatusEffect(new net.minecraft.entity.effect.StatusEffectInstance(
+                                effect, durationTicks, amplifier, false, true, true));
+                        double newBalance = PlayerEconomy.getBalance(player.getUuid());
+                        BalanceUpdatePacket.send(player, newBalance,
+                                PlayerEconomy.getDailyEarned(player.getUuid()),
+                                PlayerEconomy.getDailySpent(player.getUuid()));
+                        String levelStr = romans[Math.min(amplifier, 4)];
+                        String durLabel = durLabelRec;
+                        player.sendMessage(Text.literal("§a\u2726 " + entry.displayName()
+                                + " " + levelStr + " b\u00fcy\u00fcsu uyguland\u0131! \u00a77("
+                                + durLabel + ", -" + price + " coin)"));
+                    });
+                });
+
+        // ── Bakiye geçmişi isteği ─────────────────────────────────────────────
+        ServerPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.RequestTransactionHistoryPacket.ID,
+                (server, player, handler, buf, responseSender) -> {
+                    server.execute(() -> {
+                        List<com.cogtrade.client.TransactionEntry> history =
+                                PlayerEconomy.getTransactionHistory(player.getUuid(), 100);
+                        com.cogtrade.network.TransactionHistoryPacket.send(player, history);
+                    });
+                });
+
         LOGGER.info("CogTrade hazır!");
     }
 

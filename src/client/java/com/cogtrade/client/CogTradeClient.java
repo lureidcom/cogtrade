@@ -323,9 +323,31 @@ public class CogTradeClient implements ClientModInitializer {
                     });
                 });
 
+        // ── Bakiye geçmişi paketi ─────────────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TransactionHistoryPacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    int count = buf.readInt();
+                    java.util.List<com.cogtrade.client.TransactionEntry> entries =
+                            new java.util.ArrayList<>();
+                    for (int i = 0; i < count; i++) {
+                        entries.add(new com.cogtrade.client.TransactionEntry(
+                                buf.readInt(),
+                                buf.readString(),
+                                buf.readDouble(),
+                                buf.readString(),
+                                buf.readLong(),
+                                buf.readString(),
+                                buf.readString()
+                        ));
+                    }
+                    client.execute(() -> com.cogtrade.client.ClientTransactionData.update(entries));
+                });
+
         // ── Bağlantı kesilince sıfırla ────────────────────────────────────
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             ClientEconomyData.reset();
+            com.cogtrade.client.ClientTransactionData.reset();
             ChestHighlightRenderer.clear();
             DirectTradeScreen.currentScreen = null;
         });

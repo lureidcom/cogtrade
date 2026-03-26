@@ -292,6 +292,7 @@ public class CogTrade implements ModInitializer {
                     server.execute(() -> {
                         com.cogtrade.market.MarketItem item = com.cogtrade.market.MarketManager.getItemById(marketItemId);
                         if (item == null || !item.isEnabled()) { player.sendMessage(Text.literal("§cItem bulunamadı!")); return; }
+                        if (item.getItemId().contains("|")) { player.sendMessage(Text.literal("§cBüyü kitapları markete satılamaz!")); return; }
                         net.minecraft.util.Identifier mcId;
                         try { mcId = new net.minecraft.util.Identifier(item.getItemId()); } catch (Exception e) { player.sendMessage(Text.literal("§cGeçersiz item!")); return; }
                         net.minecraft.item.Item mcItem = Registries.ITEM.get(mcId);
@@ -675,6 +676,33 @@ public class CogTrade implements ModInitializer {
 
     private static ItemStack getItemStack(String itemId, int amount) {
         try {
+            // Özel NBT formatları: minecraft:item_id|extra_data
+            if (itemId.contains("|")) {
+                String[] parts = itemId.split("\\|");
+                // Büyü kitabı: minecraft:enchanted_book|enchant_id|level
+                if (parts.length == 3 && "minecraft:enchanted_book".equals(parts[0])) {
+                    net.minecraft.enchantment.Enchantment enchant =
+                            Registries.ENCHANTMENT.get(new Identifier("minecraft", parts[1]));
+                    if (enchant == null) return null;
+                    int level = Integer.parseInt(parts[2]);
+                    ItemStack book = new ItemStack(net.minecraft.item.Items.ENCHANTED_BOOK, amount);
+                    net.minecraft.item.EnchantedBookItem.addEnchantment(book,
+                            new net.minecraft.enchantment.EnchantmentLevelEntry(enchant, level));
+                    return book;
+                }
+                // İksir: minecraft:potion|swiftness vb.
+                if (parts.length == 2) {
+                    net.minecraft.item.Item baseItem = Registries.ITEM.get(new Identifier(parts[0]));
+                    if (baseItem != net.minecraft.item.Items.AIR) {
+                        ItemStack stack = new ItemStack(baseItem, amount);
+                        net.minecraft.nbt.NbtCompound nbt = new net.minecraft.nbt.NbtCompound();
+                        nbt.putString("Potion", "minecraft:" + parts[1]);
+                        stack.setNbt(nbt);
+                        return stack;
+                    }
+                }
+                return null;
+            }
             Identifier id = new Identifier(itemId);
             net.minecraft.item.Item item = Registries.ITEM.get(id);
             if (item == net.minecraft.item.Items.AIR) return null;

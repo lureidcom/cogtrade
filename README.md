@@ -1,6 +1,6 @@
 # CogTrade
 
-> ⚠️ **ALPHA v1.1.0** — This mod is in early development. Bugs, data loss, and breaking changes are expected. Always back up your world before use.
+> ⚠️ **ALPHA v1.2.0** — This mod is in early development. Bugs, data loss, and breaking changes are expected. Always back up your world before use.
 
 A player-driven economy mod for **Minecraft 1.20.1 (Fabric)**.
 CogTrade adds a server-side market, player trade shops, direct player-to-player trading, and an in-game currency system — all stored in a local SQLite database.
@@ -9,9 +9,15 @@ CogTrade adds a server-side market, player trade shops, direct player-to-player 
 
 ## Features
 
-### 🆕 Direct Player Trading (v1.1.0)
+### 🆕 Book GUI & BookTrade (v1.2.0)
+- **Unified Book Interface** — Press `L` or right-click a Market block to open the CogTrade book
+- **Pazar (Market)**, **Sandık (Depot)**, **Trade Post**, and **Takas (BookTrade)** all in one book
+- **BookTrade System** — Direct item trading between players via the book GUI with real-time offer/accept/reject
+- **Market Price Table** — 100+ items with reference prices (minerals, Nether/End materials, food, tools, armor)
+- **Fully Polished GUIs** — DepotScreen & TradePostScreen completely overhauled: no more text shadow artifacts, proper scaling across all resolutions, popup-based listing management
+
+### Direct Player Trading (v1.1.0)
 - **Live Trade System** — Trade items and coins directly with other players in real-time
-- **Modern GUI** — Professional 450×300px interface with color-coded sections
 - **Partial Stack Support** — Move entire stacks, single items, or precise quantities
 - **Safe & Secure** — Automatic item recovery, anti-dupe protection, mutual confirmation required
 
@@ -26,12 +32,12 @@ CogTrade adds a server-side market, player trade shops, direct player-to-player 
 
 ## Requirements
 
-| Dependency | Version |
-|---|---|
-| Minecraft | 1.20.1 |
-| Fabric Loader | ≥ 0.16.0 |
-| Fabric API | ≥ 0.92.2+1.20.1 |
-| Java | ≥ 17 |
+| Dependency    | Version              |
+|---------------|----------------------|
+| Minecraft     | 1.20.1               |
+| Fabric Loader | ≥ 0.16.0             |
+| Fabric API    | ≥ 0.92.2+1.20.1      |
+| Java          | ≥ 17                 |
 
 SQLite is **bundled** — no extra installation needed.
 
@@ -47,10 +53,18 @@ SQLite is **bundled** — no extra installation needed.
 
 ---
 
+## Keybinds
+
+| Key | Action                  |
+|-----|-------------------------|
+| `L` | Open CogTrade Book GUI  |
+
+---
+
 ## Admin Commands
 
 ```
-/ctadmin market add <item> <category> <price> <stock>
+/ctadmin market add    <item> <category> <price> <stock>
 /ctadmin market remove <id>
 /ctadmin market price  <id> <price>
 /ctadmin market stock  <id> <amount>
@@ -77,7 +91,7 @@ Requires permission level **2** (operator).
 /pay <player> <amount> — Send money to a player
 ```
 
-### Direct Trading (New in v1.1.0)
+### Direct Trading
 ```
 /trade offer <player>  — Send a trade request to another player
 /trade accept          — Accept an incoming trade request
@@ -85,7 +99,7 @@ Requires permission level **2** (operator).
 /trade cancel          — Cancel your active trade session
 ```
 
-**Trade Controls:**
+**Trade Controls (Direct Trade GUI):**
 - **Left-click** inventory item → Add full stack to offer
 - **Right-click** inventory item → Add 1 item to offer
 - **Middle-click** offer slot → Open quantity editor for precise control
@@ -98,7 +112,7 @@ Requires permission level **2** (operator).
 ## Building from Source
 
 ```bash
-git clone https://github.com/Kernel-Developer/cogtrade.git
+git clone https://github.com/lureidcom/cogtrade.git
 cd cogtrade
 ./gradlew build
 ```
@@ -116,4 +130,4 @@ MIT — see [LICENSE](LICENSE)
 ## Links
 
 - [Modrinth](https://modrinth.com/mod/cogtrade)
-- [Issue Tracker](https://github.com/Kernel-Developer/cogtrade/issues)
+- [Issue Tracker](https://github.com/lureidcom/cogtrade/issues)

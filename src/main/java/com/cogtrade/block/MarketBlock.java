@@ -13,16 +13,23 @@ import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
+import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.state.StateManager;
+import net.minecraft.state.property.DirectionProperty;
+import net.minecraft.state.property.Properties;
 import net.minecraft.text.Text;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.world.World;
 import org.jetbrains.annotations.Nullable;
 
 public class MarketBlock extends Block implements BlockEntityProvider {
+
+    public static final DirectionProperty FACING = Properties.HORIZONTAL_FACING;
 
     /**
      * Ayarlar:
@@ -44,6 +51,18 @@ public class MarketBlock extends Block implements BlockEntityProvider {
 
     public MarketBlock(Settings settings) {
         super(settings);
+        setDefaultState(this.stateManager.getDefaultState().with(FACING, Direction.NORTH));
+    }
+
+    @Override
+    protected void appendProperties(StateManager.Builder<Block, BlockState> builder) {
+        builder.add(FACING);
+    }
+
+    @Override
+    public BlockState getPlacementState(ItemPlacementContext ctx) {
+        // Ön yüz oyuncuya dönük olsun
+        return this.getDefaultState().with(FACING, ctx.getHorizontalPlayerFacing().getOpposite());
     }
 
     @Override

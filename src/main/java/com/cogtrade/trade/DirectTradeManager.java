@@ -25,7 +25,7 @@ public class DirectTradeManager {
 
     // ── Constants ─────────────────────────────────────────────────────────
 
-    private static final int REQUEST_TIMEOUT_SECONDS = 30;
+    private static final int REQUEST_TIMEOUT_SECONDS = 600; // 10 dakika
     private static final double MAX_COIN_OFFER = 10_000_000.0;
 
     // ── Runtime state (server-thread-only after server.execute() dispatch) ─
@@ -115,7 +115,10 @@ public class DirectTradeManager {
                 .append(Text.literal(" §c[Reddet]").setStyle(
                         Style.EMPTY.withClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/trade reject"))));
         target.sendMessage(msg, false);
-        target.sendMessage(Text.literal("§8(" + REQUEST_TIMEOUT_SECONDS + " saniye içinde yanıtlamazsan istek iptal olur.)"), false);
+        target.sendMessage(Text.literal("§8(10 dakika içinde yanıtlamazsan istek iptal olur.)"), false);
+
+        // GUI bildirim paketi gönder
+        TradeOfferReceivedPacket.send(target, initiator.getName().getString());
 
         return "sent";
     }
@@ -134,6 +137,7 @@ public class DirectTradeManager {
         ServerPlayerEntity target = server.getPlayerManager().getPlayer(targetUuid);
         if (target != null) {
             target.sendMessage(Text.literal("§e[CogTrade] §7Takas isteği süresi doldu."), false);
+            TradeOfferClearedPacket.send(target);
         }
     }
 
@@ -151,10 +155,12 @@ public class DirectTradeManager {
         ServerPlayerEntity initiator = server.getPlayerManager().getPlayer(pr.initiatorUuid());
         if (initiator == null) {
             target.sendMessage(Text.literal("§c[CogTrade] İsteği gönderen oyuncu artık çevrimiçi değil."), false);
+            TradeOfferClearedPacket.send(target);
             return "initiator_offline";
         }
         if (playerToSession.containsKey(pr.initiatorUuid())) {
             target.sendMessage(Text.literal("§c[CogTrade] İsteği gönderen oyuncu başka bir takasta."), false);
+            TradeOfferClearedPacket.send(target);
             return "initiator_in_session";
         }
 
@@ -167,6 +173,9 @@ public class DirectTradeManager {
         sessions.put(sessionId, session);
         playerToSession.put(pr.initiatorUuid(), sessionId);
         playerToSession.put(tgtUuid, sessionId);
+
+        // Teklif listesini temizle (kabul edildi)
+        TradeOfferClearedPacket.send(target);
 
         OpenDirectTradePacket.send(initiator, session, true);
         OpenDirectTradePacket.send(target,    session, false);
@@ -187,6 +196,7 @@ public class DirectTradeManager {
         initiatorToTarget.remove(pr.initiatorUuid());
 
         target.sendMessage(Text.literal("§e[CogTrade] §7Takas isteği reddedildi."), false);
+        TradeOfferClearedPacket.send(target);
 
         ServerPlayerEntity initiator = server.getPlayerManager().getPlayer(pr.initiatorUuid());
         if (initiator != null) {
@@ -541,6 +551,7 @@ public class DirectTradeManager {
                 if (targetPlayer != null) {
                     targetPlayer.sendMessage(
                             Text.literal("§e[CogTrade] §7Takas isteği gönderen çevrimdışı oldu."), false);
+                    TradeOfferClearedPacket.send(targetPlayer);
                 }
             }
         }

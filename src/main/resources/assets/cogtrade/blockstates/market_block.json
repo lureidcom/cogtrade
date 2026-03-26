@@ -1,5 +1,8 @@
 {
   "variants": {
-    "": { "model": "cogtrade:block/market_block" }
+    "facing=north": { "model": "cogtrade:block/market_block" },
+    "facing=south": { "model": "cogtrade:block/market_block", "y": 180 },
+    "facing=west":  { "model": "cogtrade:block/market_block", "y": 90 },
+    "facing=east":  { "model": "cogtrade:block/market_block", "y": 270 }
   }
 }

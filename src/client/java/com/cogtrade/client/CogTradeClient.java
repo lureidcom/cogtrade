@@ -26,28 +26,11 @@ import java.util.List;
 @Environment(EnvType.CLIENT)
 public class CogTradeClient implements ClientModInitializer {
 
-    private static KeyBinding marketKey;
     private static KeyBinding bookGuiKey;
     
     @Override
     public void onInitializeClient() {
         CogTrade.LOGGER.info("CogTrade client başlatılıyor...");
-
-        // ── Keybinding: O tuşu → /market komutu ──────────────────────────
-        marketKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.cogtrade.market",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_O,
-                "category.cogtrade"
-        ));
-
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (marketKey.wasPressed()) {
-                if (client.player != null && client.currentScreen == null) {
-                    client.getNetworkHandler().sendChatCommand("market");
-                }
-            }
-        });
 
         // ── Keybinding: L tuşu → CogTrade Book GUI ───────────────────────
         bookGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
@@ -91,7 +74,14 @@ public class CogTradeClient implements ClientModInitializer {
                     }
                     boolean canBuy            = buf.readBoolean();
                     double sellPriceMultiplier = buf.readDouble();
-                    client.execute(() -> client.setScreen(new MarketScreen(items, canBuy, sellPriceMultiplier)));
+                    client.execute(() -> {
+                        // Her durumda önbelleği güncelle (Book GUI PAZAR sayfası için)
+                        ClientMarketData.updateMarket(items, canBuy, sellPriceMultiplier);
+                        // Book GUI açıksa ekranı değiştirme — yalnızca veri güncelleme
+                        if (client.currentScreen instanceof com.cogtrade.client.gui.CogTradeBookScreen) return;
+                        // Market bloğu sağ tıklaması → yeni kitap GUI (sadece pazar)
+                        client.setScreen(new com.cogtrade.client.gui.CogTradeBookScreen(true));
+                    });
                 });
 
         // ── Market locate paketi ──────────────────────────────────────────
@@ -216,6 +206,8 @@ public class CogTradeClient implements ClientModInitializer {
                         ));
                     }
                     client.execute(() -> {
+                        // Önbelleği güncelle (Book GUI PAZAR sayfası için)
+                        ClientMarketData.updateShopListings(entries);
                         if (client.currentScreen instanceof MarketScreen ms) {
                             ms.updatePlayerShopData(entries);
                         }
@@ -267,7 +259,7 @@ public class CogTradeClient implements ClientModInitializer {
                     boolean myReady      = buf.readBoolean();
                     boolean partnerReady = buf.readBoolean();
 
-                    client.execute(() -> DirectTradeScreen.open(
+                    client.execute(() -> BookTradeScreen.open(
                             client, sessionId, partnerName,
                             myOffer, partnerOffer,
                             myCoins, partnerCoins,
@@ -289,7 +281,7 @@ public class CogTradeClient implements ClientModInitializer {
                     boolean myReady      = buf.readBoolean();
                     boolean partnerReady = buf.readBoolean();
 
-                    client.execute(() -> DirectTradeScreen.updateState(
+                    client.execute(() -> BookTradeScreen.updateState(
                             myOffer, partnerOffer, myCoins, partnerCoins, myReady, partnerReady));
                 });
 
@@ -299,7 +291,7 @@ public class CogTradeClient implements ClientModInitializer {
                 (client, handler, buf, responseSender) -> {
                     String reason = buf.readString();
                     client.execute(() ->
-                            DirectTradeScreen.closeFromServer(client,
+                            BookTradeScreen.closeFromServer(client,
                                     "§e[CogTrade] §7Takas iptal edildi: " + reason));
                 });
 
@@ -314,7 +306,7 @@ public class CogTradeClient implements ClientModInitializer {
                         String msg = "§a[CogTrade] §fTakas tamamlandı! §7" + partnerName + " ile.";
                         if (myCoinsGiven    > 0) msg += " §c-" + String.format("%.0f", myCoinsGiven)    + "⬡";
                         if (myCoinsReceived > 0) msg += " §a+" + String.format("%.0f", myCoinsReceived) + "⬡";
-                        DirectTradeScreen.closeFromServer(client, msg);
+                        BookTradeScreen.closeFromServer(client, msg);
                         if (client.player != null) {
                             client.player.playSound(
                                     net.minecraft.sound.SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP,
@@ -344,12 +336,29 @@ public class CogTradeClient implements ClientModInitializer {
                     client.execute(() -> com.cogtrade.client.ClientTransactionData.update(entries));
                 });
 
+        // ── Takas teklifi alındı (GUI bildirimi) ──────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeOfferReceivedPacket.ID,
+                (client, handler, buf, responseSender) -> {
+                    String initiatorName = buf.readString();
+                    client.execute(() -> ClientTradeOffers.addOffer(initiatorName));
+                });
+
+        // ── Takas teklifi temizlendi ───────────────────────────────────────
+        ClientPlayNetworking.registerGlobalReceiver(
+                com.cogtrade.network.TradeOfferClearedPacket.ID,
+                (client, handler, buf, responseSender) ->
+                        client.execute(ClientTradeOffers::clear));
+
         // ── Bağlantı kesilince sıfırla ────────────────────────────────────
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             ClientEconomyData.reset();
             com.cogtrade.client.ClientTransactionData.reset();
+            ClientMarketData.reset();
             ChestHighlightRenderer.clear();
+            ClientTradeOffers.clear();
             DirectTradeScreen.currentScreen = null;
+            BookTradeScreen.currentScreen = null;
         });
 
         CogTradeHud.register();

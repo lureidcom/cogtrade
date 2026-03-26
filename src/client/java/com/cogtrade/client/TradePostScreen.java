@@ -1,5 +1,7 @@
 package com.cogtrade.client;
 
+import com.cogtrade.CogTrade;
+import com.cogtrade.client.gui.NineSliceRenderer;
 import com.cogtrade.market.PlayerShopManager;
 import com.cogtrade.network.PostActionPacket;
 import com.cogtrade.network.PostRefreshPacket;
@@ -9,8 +11,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -24,746 +25,786 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-/**
- * Trade Post yönetim ekranı (sahip için).
- * Depot'taki stok görüntülenir, buradan fiyat + ilan yönetimi yapılır.
- * Alıcılar için ayrı PlayerShopScreen kullanılır.
- */
 @Environment(EnvType.CLIENT)
 public class TradePostScreen extends Screen {
 
-    // ── Colors ──────────────────────────────────────────────────────────────
-    private static final int C_PANEL        = 0xFF1E1E1E;
-    private static final int C_BORDER       = 0xFF0A0A0A;
-    private static final int C_GOLD         = 0xFFFFD54F;
-    private static final int C_GREEN        = 0xFF66BB6A;
-    private static final int C_RED          = 0xFFEF5350;
-    private static final int C_TEXT         = 0xFFDDDDDD;
-    private static final int C_SUBTEXT      = 0xFF888888;
-    private static final int C_SLOT         = 0xFF2D2D2D;
-    private static final int C_SLOT_HOVER   = 0xFF424242;
-    private static final int C_SLOT_SEL     = 0xFF8B6914;
-    private static final int C_SLOT_LISTED  = 0xFF1A3020;
-    private static final int C_SEP          = 0xFF3A3A3A;
-    private static final int C_DARK         = 0xFF141414;
-    private static final int C_CAT_ACT      = 0xFF3A2E0E;
-    private static final int C_CAT_IN       = 0xFF252525;
-    private static final int C_DETAIL_BG    = 0xFF1A1A1A;
-    private static final int C_CYAN         = 0xFF4DD0E1;
+    // ── Textures ──────────────────────────────────────────────────────────
+    private static final Identifier BOOK_TEX  = new Identifier(CogTrade.MOD_ID, "textures/gui/book.png");
+    private static final Identifier FRAME_TEX = new Identifier(CogTrade.MOD_ID, "textures/gui/item-frame.png");
 
-    private static final int    SLOT_SIZE  = 36;
-    private static final int    SLOT_GAP   = 4;
-    private static final String[] CATEGORIES       = {"Tümü", "Satışta", "Satışta Değil"};
-    private static final String[] ITEM_CATEGORIES  = {
-            "Hammadde",     // Cevher, külçe, kütük, hayvan ürünleri
-            "Blok",         // İnşaat blokları, dekoratif
-            "Yiyecek",      // Yenilebilir itemler
-            "Araç/Ekipman", // Alet, silah, zırh, balık oltası
-            "Ekim",         // Tohum, fidan, çiçek, bitki
-            "Yaratık",      // Mob dropu, spawner, yumurta
-            "Redstone",     // Redstone bileşenleri
-            "Enchant/Kitap",// Kitaplar, büyülü itemler
-            "Misc"          // Diğer
+    private static final int BOOK_W = 1623, BOOK_H = 1080;
+    private static final int LP_X = 199, LP_Y = 233, LP_W = 559, LP_H = 609;
+    private static final int RP_X = 864, RP_Y = 233, RP_W = 559, RP_H = 609;
+
+    // ── Content sizes — SCREEN PIXELS (not scaled) ────────────────────────
+    private static final int TITLE_H   = 28;
+    private static final int TABS_H    = 20;
+    private static final int SF_H      = 14;
+    private static final int FRAME_S   = 28;
+    private static final int PITCH     = 31;
+    private static final int BIG_FRAME = 52;
+    private static final int BIG_ITEM  =  2;
+    private static final int ROW_H     = 18;  // listing row
+
+    // ── Colors ────────────────────────────────────────────────────────────
+    private static final int C_TITLE = 0xFF3D2200;
+    private static final int C_LABEL = 0xFF5A3F10;
+    private static final int C_DIM   = 0xFF7A5B2A;
+    private static final int C_SEP   = 0x887A5B2A;
+    private static final int C_GREEN = 0xFF1A6E28;
+    private static final int C_RED   = 0xFF6E1A1A;
+    private static final int C_GOLD  = 0xFF9B6A00;
+
+    private static final String[] TABS = {"Tümü", "Satışta", "Satışta Değil"};
+    private static final String[] ITEM_CATS = {
+            "Hammadde","Blok","Yiyecek","Araç/Ekipman",
+            "Ekim","Yaratık","Redstone","Enchant/Kitap","Misc"
     };
 
-    // ── Data ────────────────────────────────────────────────────────────────
+    // ── Data ──────────────────────────────────────────────────────────────
     private Map<String, Integer>                available;
     private List<PlayerShopManager.ShopListing> listings;
+    private List<Map.Entry<String, Integer>>    grid;
+    private List<PlayerShopManager.ShopListing> sorted;
 
-    private List<Map.Entry<String, Integer>>        gridItems;
-    private List<PlayerShopManager.ShopListing>     filteredListings;
+    // ── UI state ──────────────────────────────────────────────────────────
+    private int     catIdx    = 0;
+    private String  selId     = null;
+    private int     gridScroll= 0;
+    private int     listScroll= 0;
+    private int     selListing= -1;
+    private int     tick      = 0;
+    private String  sfBuf     = "";
+    private boolean sfActive  = false;
 
-    // ── UI State ────────────────────────────────────────────────────────────
-    private int    selectedCatIdx    = 0;
-    private String selectedItemId    = null;
-    private int    gridScroll        = 0;
-    private int    listScroll        = 0;
-    private int    selectedListingIdx = -1;
-    private int    catListingIdx     = 0;
-    private int    refreshTick       = 0;
+    // ── Popup state ───────────────────────────────────────────────────────
+    private boolean popOpen    = false;
+    private String  popPrice   = "";
+    private boolean popPriceA  = false;
+    private int     popCatIdx  = 0;
 
-    // Tracked during render so click/scroll handlers use matching bounds
-    private int    activeListStartY  = 0;
-    private int    activeListBottomY = 0;
+    // ── Layout ────────────────────────────────────────────────────────────
+    private int guiX, guiY;
+    private double scale;
+    private int lpX, lpY, lpW, lpH;
+    private int rpX, rpY, rpW;
 
-    // ── Layout ──────────────────────────────────────────────────────────────
-    private int panelX, panelY, panelW, panelH;
-    private int catX,   catY,   catW,   catH;
-    private int gridX,  gridY,  gridW,  gridH;
-    private int detailX, detailY, detailW, detailH;
+    // Set during renderRight, consumed by mouse handler
+    private int listStartY, listEndY;
 
-    // ── Widgets ─────────────────────────────────────────────────────────────
-    private TextFieldWidget searchField;
-    private TextFieldWidget priceField;
-    private ButtonWidget    catListingButton;
-    private ButtonWidget    addButton;
-    private ButtonWidget    removeButton;
-
-    private String searchQuery = "";
-
-    // ── Constructor ─────────────────────────────────────────────────────────
+    // ── Constructor ───────────────────────────────────────────────────────
     public TradePostScreen(Map<String, Integer> available,
                            List<PlayerShopManager.ShopListing> listings) {
-        super(Text.literal("Trade Post Yönetimi"));
+        super(Text.literal("Trade Post"));
         this.available = new LinkedHashMap<>(available);
         this.listings  = new ArrayList<>(listings);
     }
 
-    /** In-place refresh — ekran kapatılmadan güncellenir. */
-    public void refresh(Map<String, Integer> newAvailable,
-                        List<PlayerShopManager.ShopListing> newListings) {
-        this.available = new LinkedHashMap<>(newAvailable);
-        this.listings  = new ArrayList<>(newListings);
-        applyFilters();
-        // Sync price field if selected item's listing changed
-        if (selectedItemId != null) syncPriceField();
+    public void refresh(Map<String, Integer> a, List<PlayerShopManager.ShopListing> l) {
+        this.available = new LinkedHashMap<>(a);
+        this.listings  = new ArrayList<>(l);
+        filter();
     }
 
-    // ── Init ────────────────────────────────────────────────────────────────
+    private int sc(int v) { return Math.max(1, (int)(v * scale)); }
+
     @Override
     protected void init() {
-        computeLayout();
-
-        // Search
-        searchField = new TextFieldWidget(textRenderer,
-                gridX + 4, panelY + 6, gridW - 8, 14, Text.literal("Ara"));
-        searchField.setMaxLength(40);
-        searchField.setSuggestion("İtem ara...");
-        searchField.setText(searchQuery);
-        searchField.setChangedListener(s -> { searchQuery = s; applyFilters(); });
-        addDrawableChild(searchField);
-
-        // Price field + action buttons (in detail panel)
-        int pfY = detailY + detailH - 94;
-
-        priceField = new TextFieldWidget(textRenderer,
-                detailX + 6, pfY, detailW - 12, 14, Text.literal("Fiyat"));
-        priceField.setMaxLength(12);
-        priceField.setSuggestion("Fiyat (⬡)...");
-        addDrawableChild(priceField);
-
-        catListingButton = ButtonWidget.builder(
-                Text.literal("§7Kat: §f" + ITEM_CATEGORIES[catListingIdx]),
-                btn -> {
-                    catListingIdx = (catListingIdx + 1) % ITEM_CATEGORIES.length;
-                    btn.setMessage(Text.literal("§7Kat: §f" + ITEM_CATEGORIES[catListingIdx]));
-                })
-                .dimensions(detailX + 6, pfY + 18, detailW - 12, 14).build();
-        addDrawableChild(catListingButton);
-
-        addButton = ButtonWidget.builder(Text.literal("§a+ Satışa Ekle"), btn -> handleAdd())
-                .dimensions(detailX + 6, pfY + 36, detailW - 12, 16).build();
-        addDrawableChild(addButton);
-
-        removeButton = ButtonWidget.builder(Text.literal("§c− Kaldır"), btn -> handleRemove())
-                .dimensions(detailX + 6, pfY + 56, detailW - 12, 16).build();
-        addDrawableChild(removeButton);
-
-        addDrawableChild(ButtonWidget.builder(Text.literal("✕"), btn -> close())
-                .dimensions(panelX + panelW - 17, panelY + 4, 13, 13).build());
-
-        applyFilters();
+        scale = Math.min(width * 0.9 / BOOK_W, height * 0.9 / BOOK_H);
+        guiX  = (width  - sc(BOOK_W)) / 2;
+        guiY  = (height - sc(BOOK_H)) / 2;
+        lpX = guiX + sc(LP_X); lpY = guiY + sc(LP_Y);
+        lpW = sc(LP_W);         lpH = sc(LP_H);
+        rpX = guiX + sc(RP_X); rpY = guiY + sc(RP_Y);
+        rpW = sc(RP_W);
+        listStartY = height; listEndY = height;
+        filter();
     }
 
-    private void computeLayout() {
-        panelW = Math.min(820, width - 20);
-        panelH = Math.min(490, height - 20);
-        panelX = (width  - panelW) / 2;
-        panelY = (height - panelH) / 2;
-
-        catW = 110;
-        catX = panelX + 4;
-        catY = panelY + 26;
-        catH = panelH - 30;
-
-        detailW = Math.max(170, Math.min(195, panelW / 4));
-        detailX = panelX + panelW - detailW - 4;
-        detailY = panelY + 26;
-        detailH = panelH - 30;
-
-        gridX = catX + catW + 4;
-        gridY = panelY + 26;
-        gridW = detailX - gridX - 4;
-        gridH = panelH - 30;
-    }
-
-    // ── Filter ──────────────────────────────────────────────────────────────
-    private void applyFilters() {
-        String q = searchQuery.trim().toLowerCase(Locale.ROOT);
-        Set<String> listedIds = listings.stream()
-                .map(PlayerShopManager.ShopListing::itemId)
-                .collect(Collectors.toSet());
-
-        Stream<Map.Entry<String, Integer>> stream = available.entrySet().stream();
-        if (!q.isEmpty())
-            stream = stream.filter(e ->
-                    getDisplayName(e.getKey()).toLowerCase(Locale.ROOT).contains(q));
-        if (selectedCatIdx == 1)
-            stream = stream.filter(e -> listedIds.contains(e.getKey()));
-        else if (selectedCatIdx == 2)
-            stream = stream.filter(e -> !listedIds.contains(e.getKey()));
-
-        gridItems = stream
-                .sorted(Comparator.comparing(e -> getDisplayName(e.getKey())))
-                .collect(Collectors.toList());
-
-        filteredListings = new ArrayList<>(listings);
-        filteredListings.sort(Comparator.comparing(PlayerShopManager.ShopListing::displayName));
-
-        gridScroll = 0;
-        if (selectedItemId != null &&
-                gridItems.stream().noneMatch(e -> e.getKey().equals(selectedItemId))) {
-            selectedItemId = null;
-            if (priceField != null) priceField.setText("");
+    @Override
+    public void tick() {
+        if (++tick >= 40) {
+            tick = 0;
+            ClientPlayNetworking.send(PostRefreshPacket.ID, PacketByteBufs.create());
         }
     }
 
-    private void syncPriceField() {
-        if (selectedItemId == null || priceField == null) return;
-        listings.stream()
-                .filter(l -> l.itemId().equals(selectedItemId))
-                .findFirst()
-                .ifPresent(l -> {
-                    priceField.setText(String.format("%.0f", l.price()));
-                    for (int ci = 0; ci < ITEM_CATEGORIES.length; ci++) {
-                        if (ITEM_CATEGORIES[ci].equals(l.category())) {
-                            catListingIdx = ci;
-                            if (catListingButton != null)
-                                catListingButton.setMessage(
-                                        Text.literal("§7Kat: §f" + ITEM_CATEGORIES[ci]));
-                            break;
-                        }
-                    }
-                });
+    private void filter() {
+        String q = sfBuf.trim().toLowerCase(Locale.ROOT);
+        Set<String> listed = listings.stream()
+                .map(PlayerShopManager.ShopListing::itemId).collect(Collectors.toSet());
+
+        Stream<Map.Entry<String, Integer>> s = available.entrySet().stream();
+        if (!q.isEmpty()) s = s.filter(e -> name(e.getKey()).toLowerCase(Locale.ROOT).contains(q));
+        if (catIdx == 1) s = s.filter(e ->  listed.contains(e.getKey()));
+        if (catIdx == 2) s = s.filter(e -> !listed.contains(e.getKey()));
+
+        grid   = s.sorted(Comparator.comparing(e -> name(e.getKey()))).collect(Collectors.toList());
+        sorted = new ArrayList<>(listings);
+        sorted.sort(Comparator.comparing(PlayerShopManager.ShopListing::displayName));
+        gridScroll = 0;
+        if (selId != null && grid.stream().noneMatch(e -> e.getKey().equals(selId))) selId = null;
     }
 
-    // ── Action handlers ──────────────────────────────────────────────────────
-    private void handleAdd() {
-        if (selectedItemId == null) return;
-        String priceText = priceField.getText().trim().replace(',', '.');
-        double price;
-        try { price = Double.parseDouble(priceText); }
-        catch (NumberFormatException e) { return; }
-        if (price <= 0) return;
-
-        String category = ITEM_CATEGORIES[catListingIdx];
+    private void doAdd() {
+        if (selId == null) return;
+        String ps = popPrice.trim().replace(',', '.');
+        double p; try { p = Double.parseDouble(ps); } catch (NumberFormatException e) { return; }
+        if (p <= 0) return;
         PacketByteBuf buf = PacketByteBufs.create();
         buf.writeInt(PostActionPacket.ACTION_ADD);
-        buf.writeString(selectedItemId);
-        buf.writeDouble(price);
-        buf.writeString(category);
+        buf.writeString(selId);
+        buf.writeDouble(p);
+        buf.writeString(ITEM_CATS[popCatIdx]);
         ClientPlayNetworking.send(PostActionPacket.ID, buf);
+        popOpen = false;
     }
 
-    private void handleRemove() {
-        String removeId = null;
-        if (selectedListingIdx >= 0 && selectedListingIdx < filteredListings.size()) {
-            removeId = filteredListings.get(selectedListingIdx).itemId();
-        } else if (selectedItemId != null) {
-            boolean isListed = listings.stream().anyMatch(l -> l.itemId().equals(selectedItemId));
-            if (isListed) removeId = selectedItemId;
-        }
-        if (removeId == null) return;
+    private void doRemove() {
+        String id = null;
+        if (selListing >= 0 && sorted != null && selListing < sorted.size())
+            id = sorted.get(selListing).itemId();
+        else if (selId != null && listings.stream().anyMatch(l -> l.itemId().equals(selId)))
+            id = selId;
+        if (id == null) return;
         PacketByteBuf buf = PacketByteBufs.create();
         buf.writeInt(PostActionPacket.ACTION_REMOVE);
-        buf.writeString(removeId);
+        buf.writeString(id);
         buf.writeDouble(0);
         buf.writeString("");
         ClientPlayNetworking.send(PostActionPacket.ID, buf);
     }
 
-    // ── Tick (real-time refresh) ─────────────────────────────────────────────
+    // ── Render ────────────────────────────────────────────────────────────
     @Override
-    public void tick() {
-        super.tick();
-        if (++refreshTick >= 40) {
-            refreshTick = 0;
-            PacketByteBuf buf = PacketByteBufs.create();
-            ClientPlayNetworking.send(PostRefreshPacket.ID, buf);
-        }
-    }
-
-    // ── Render ───────────────────────────────────────────────────────────────
-    @Override
-    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+    public void render(DrawContext ctx, int mx, int my, float delta) {
         renderBackground(ctx);
-        drawFrame(ctx);
-        drawCategoryPanel(ctx, mouseX, mouseY);
-        drawGrid(ctx, mouseX, mouseY);
-        drawDetailPanel(ctx, mouseX, mouseY);
-        super.render(ctx, mouseX, mouseY, delta);
+        NineSliceRenderer.drawFullTexture(ctx, BOOK_TEX, guiX, guiY, sc(BOOK_W), sc(BOOK_H), BOOK_W, BOOK_H);
+        renderLeft(ctx, mx, my);
+        renderRight(ctx, mx, my);
+        if (popOpen) renderPopup(ctx, mx, my);
     }
 
-    private void drawFrame(DrawContext ctx) {
-        ctx.fill(panelX, panelY, panelX + panelW, panelY + panelH, C_BORDER);
-        ctx.fill(panelX + 1, panelY + 1, panelX + panelW - 1, panelY + panelH - 1, C_PANEL);
+    // ── Left page ─────────────────────────────────────────────────────────
+    private void renderLeft(DrawContext ctx, int mx, int my) {
+        int y = lpY;
 
-        ctx.drawCenteredTextWithShadow(textRenderer,
-                "§b✦ Trade Post — İlan Yönetimi ✦",
-                panelX + panelW / 2, panelY + 8, C_CYAN);
-        ctx.fill(panelX + 3, panelY + 22, panelX + panelW - 3, panelY + 23, C_SEP);
-        ctx.fill(catX + catW + 1, panelY + 24, catX + catW + 2, panelY + panelH - 3, C_SEP);
-        ctx.fill(detailX - 3,     panelY + 24, detailX - 2,     panelY + panelH - 3, C_SEP);
-    }
+        title2x(ctx, "Trade Post", lpX + lpW/2, y + (TITLE_H-16)/2, C_TITLE);
+        y += TITLE_H;
+        ctx.fill(lpX+8, y, lpX+lpW-8, y+1, C_SEP);
+        y += 5;
 
-    // ── Category panel ────────────────────────────────────────────────────────
-    private void drawCategoryPanel(DrawContext ctx, int mouseX, int mouseY) {
-        ctx.fill(catX, catY, catX + catW, catY + catH, C_DARK);
-
-        int tabH = 20;
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            int ty  = catY + i * (tabH + 2);
-            boolean sel = i == selectedCatIdx;
-            boolean hov = mouseX >= catX && mouseX < catX + catW
-                    && mouseY >= ty && mouseY < ty + tabH;
-
-            ctx.fill(catX, ty, catX + catW, ty + tabH,
-                    sel ? C_CAT_ACT : (hov ? 0xFF303030 : C_CAT_IN));
-            ctx.fill(catX, ty + tabH - 1, catX + catW, ty + tabH,
-                    sel ? C_CYAN : C_SEP);
-            ctx.drawText(textRenderer, sel ? "§b" + CATEGORIES[i] : "§7" + CATEGORIES[i],
-                    catX + 7, ty + 6, sel ? C_CYAN : C_SUBTEXT, false);
+        // Tabs
+        int tabW = lpW / TABS.length;
+        for (int i = 0; i < TABS.length; i++) {
+            int tx = lpX + i * tabW;
+            boolean sel = (i == catIdx);
+            boolean hov = over(mx, my, tx, y, tabW, TABS_H);
+            ctx.fill(tx+1, y+1, tx+tabW-1, y+TABS_H-1,
+                    sel ? 0x88BB9922 : hov ? 0x44AA7700 : 0);
+            ctx.fill(tx, y, tx+tabW, y+1, C_SEP);
+            ctx.fill(tx, y+TABS_H-1, tx+tabW, y+TABS_H, C_SEP);
+            if (i > 0) ctx.fill(tx, y+1, tx+1, y+TABS_H-1, C_SEP);
+            if (sel) ctx.fill(tx+2, y+TABS_H-2, tx+tabW-2, y+TABS_H-1, C_GOLD);
+            String lbl = TABS[i];
+            ctx.drawText(textRenderer, lbl,
+                    tx + (tabW - textRenderer.getWidth(lbl))/2,
+                    y + (TABS_H - 8)/2,
+                    sel || hov ? C_LABEL : C_DIM, false);
         }
+        y += TABS_H + 4;
+        ctx.fill(lpX+8, y, lpX+lpW-8, y+1, C_SEP);
+        y += 4;
 
-        int badgeY = catY + CATEGORIES.length * (tabH + 2) + 8;
-        ctx.drawText(textRenderer, "§8Depoda: §f" + available.size() + " çeşit",
-                catX + 5, badgeY, C_SUBTEXT, false);
-        ctx.drawText(textRenderer, "§8Satışta: §e" + listings.size() + " ilan",
-                catX + 5, badgeY + 11, C_SUBTEXT, false);
+        // Search
+        renderField(ctx, mx, my, lpX+4, y, lpW-8, SF_H, sfBuf, sfActive, "Ara...");
+        y += SF_H + 4;
+        ctx.fill(lpX+8, y, lpX+lpW-8, y+1, C_SEP);
+        y += 3;
+
+        renderGrid(ctx, mx, my, y);
     }
 
-    // ── Grid ─────────────────────────────────────────────────────────────────
-    private void drawGrid(DrawContext ctx, int mouseX, int mouseY) {
-        int gx = gridX + 4, gy = gridY + 24, gw = gridW - 8, gh = gridH - 28;
-        ctx.fill(gridX, gridY + 22, gridX + gridW, gridY + gridH, C_DARK);
+    private void renderGrid(DrawContext ctx, int mx, int my, int startY) {
+        int gH = lpY + lpH - startY;
 
-        if (gridItems.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                    available.isEmpty() ? "§7Depoda item yok" : "§7Sonuç bulunamadı",
-                    gx + gw / 2, gy + gh / 2 - 4, C_SUBTEXT);
+        if (grid == null || grid.isEmpty()) {
+            String msg = available.isEmpty() ? "Depoda item yok" : "Sonuç bulunamadı";
+            cText(ctx, msg, lpX + lpW/2, startY + gH/2 - 4, C_DIM);
             return;
         }
 
-        int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
-        int visRows   = Math.max(1, gh / (SLOT_SIZE + SLOT_GAP));
-        int totalRows = (gridItems.size() + totalCols - 1) / totalCols;
-        int maxScroll = Math.max(0, totalRows - visRows);
-        gridScroll    = Math.max(0, Math.min(gridScroll, maxScroll));
+        int cols  = Math.max(1, lpW / PITCH);
+        int vrows = Math.max(1, gH / PITCH);
+        int total = (grid.size() + cols - 1) / cols;
+        gridScroll = Math.max(0, Math.min(gridScroll, Math.max(0, total-vrows)));
 
-        Set<String> listedIds = listings.stream()
-                .map(PlayerShopManager.ShopListing::itemId)
-                .collect(Collectors.toSet());
+        Set<String> listed = listings.stream()
+                .map(PlayerShopManager.ShopListing::itemId).collect(Collectors.toSet());
 
-        for (int row = 0; row < visRows; row++) {
-            int absRow = row + gridScroll;
-            for (int col = 0; col < totalCols; col++) {
-                int idx = absRow * totalCols + col;
-                if (idx >= gridItems.size()) break;
+        for (int r = 0; r < vrows; r++) {
+            for (int c = 0; c < cols; c++) {
+                int idx = (r + gridScroll) * cols + c;
+                if (idx >= grid.size()) break;
+                var e  = grid.get(idx);
+                String id  = e.getKey();
+                int    cnt = e.getValue();
+                int sx = lpX + c * PITCH;
+                int sy = startY + r * PITCH;
 
-                Map.Entry<String, Integer> entry = gridItems.get(idx);
-                String itemId = entry.getKey();
-                int count     = entry.getValue();
+                boolean hov = over(mx, my, sx, sy, FRAME_S, FRAME_S);
+                boolean sel = id.equals(selId);
+                boolean lst = listed.contains(id);
 
-                int sx = gx + col * (SLOT_SIZE + SLOT_GAP);
-                int sy = gy + row * (SLOT_SIZE + SLOT_GAP);
+                NineSliceRenderer.drawFullTexture(ctx, FRAME_TEX, sx, sy, FRAME_S, FRAME_S, 32, 32);
+                if (sel)      ctx.fill(sx+2, sy+2, sx+FRAME_S-2, sy+FRAME_S-2, 0x77FFCC00);
+                else if (lst) ctx.fill(sx+2, sy+2, sx+FRAME_S-2, sy+FRAME_S-2, 0x4400CC44);
+                else if (hov) ctx.fill(sx+2, sy+2, sx+FRAME_S-2, sy+FRAME_S-2, 0x44FFDD88);
 
-                boolean hov    = mouseX >= sx && mouseX < sx + SLOT_SIZE
-                        && mouseY >= sy && mouseY < sy + SLOT_SIZE;
-                boolean sel    = itemId.equals(selectedItemId);
-                boolean listed = listedIds.contains(itemId);
+                ItemStack stk = stack(id);
+                if (!stk.isEmpty()) ctx.drawItem(stk, sx+(FRAME_S-16)/2, sy+(FRAME_S-16)/2);
 
-                int bgCol = sel ? C_SLOT_SEL : listed ? C_SLOT_LISTED : hov ? C_SLOT_HOVER : C_SLOT;
-                ctx.fill(sx, sy, sx + SLOT_SIZE, sy + SLOT_SIZE, C_BORDER);
-                ctx.fill(sx + 1, sy + 1, sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, bgCol);
-
-                ItemStack stack = getStack(itemId);
-                if (!stack.isEmpty())
-                    ctx.drawItem(stack, sx + (SLOT_SIZE - 16) / 2, sy + (SLOT_SIZE - 16) / 2 - 2);
-
-                String countStr = count >= 1000 ? (count / 1000) + "k" : String.valueOf(count);
-                int cw = textRenderer.getWidth(countStr);
-                ctx.fill(sx + SLOT_SIZE - cw - 3, sy + SLOT_SIZE - 9,
-                        sx + SLOT_SIZE - 1, sy + SLOT_SIZE - 1, 0xAA000000);
-                ctx.drawText(textRenderer, countStr,
-                        sx + SLOT_SIZE - cw - 2, sy + SLOT_SIZE - 8,
-                        listed ? C_GREEN : C_TEXT, false);
-
-                if (listed) {
-                    ctx.fill(sx + 1, sy + 1, sx + 8, sy + 7, 0xAA1A4020);
-                    ctx.drawText(textRenderer, "§a✓", sx + 1, sy + 1, C_GREEN, false);
-                }
+                String badge = cnt >= 1000 ? (cnt/1000)+"k" : String.valueOf(cnt);
+                int bw = textRenderer.getWidth(badge);
+                ctx.fill(sx+FRAME_S-bw-3, sy+FRAME_S-9, sx+FRAME_S, sy+FRAME_S, 0xCC000000);
+                ctx.drawText(textRenderer, badge, sx+FRAME_S-bw-2, sy+FRAME_S-8,
+                        lst ? 0xFF80FF80 : 0xFFEEEEEE, false);
             }
         }
 
-        if (maxScroll > 0) {
-            int sbX = gridX + gridW - 4;
-            ctx.fill(sbX, gy, sbX + 2, gy + gh, 0xFF2A2A2A);
-            int barH = Math.max(12, gh * visRows / totalRows);
-            int barY = gy + gridScroll * (gh - barH) / maxScroll;
-            ctx.fill(sbX, barY, sbX + 2, barY + barH, 0xFF666666);
+        if (total > vrows) {
+            int sbX = lpX + lpW - 3;
+            int barH = Math.max(8, gH * vrows / total);
+            int barY = startY + gridScroll * (gH - barH) / Math.max(1, total-vrows);
+            ctx.fill(sbX, startY, sbX+3, startY+gH, 0x22000000);
+            ctx.fill(sbX, barY,   sbX+3, barY+barH,  0xBB9B6200);
         }
     }
 
-    // ── Detail panel ─────────────────────────────────────────────────────────
-    private void drawDetailPanel(DrawContext ctx, int mouseX, int mouseY) {
-        ctx.fill(detailX, detailY, detailX + detailW, detailY + detailH, C_BORDER);
-        ctx.fill(detailX + 1, detailY + 1, detailX + detailW - 1, detailY + detailH - 1, C_DETAIL_BG);
+    // ── Right page ────────────────────────────────────────────────────────
+    private void renderRight(DrawContext ctx, int mx, int my) {
+        int cx = rpX + rpW/2;
+        int y  = rpY;
 
-        int cx = detailX + detailW / 2;
-        int y  = detailY + 8;
-
-        if (selectedItemId == null) {
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                    "§7Grid'den item seçin", cx, detailY + detailH / 3, C_SUBTEXT);
-            activeListStartY  = detailY + detailH / 2;
-            activeListBottomY = detailY + detailH - 4;
-            drawActiveListings(ctx, mouseX, mouseY, activeListStartY, activeListBottomY);
-            return;
-        }
-
-        // Icon box
-        int boxS = 20, boxX = cx - boxS / 2;
-        ctx.fill(boxX - 3, y - 3, boxX + boxS + 3, y + boxS + 3, 0xFF333333);
-        ctx.fill(boxX - 2, y - 2, boxX + boxS + 2, y + boxS + 2, 0xFF1A1A1A);
-        ItemStack stack = getStack(selectedItemId);
-        if (!stack.isEmpty()) ctx.drawItem(stack, boxX + 2, y + 2);
-        y += boxS + 8;
-
-        // Name
-        ctx.drawCenteredTextWithShadow(textRenderer,
-                "§f" + truncate(getDisplayName(selectedItemId), detailW - 12), cx, y, C_TEXT);
-        y += 12;
-
-        // Stock in depot
-        int depotCount = available.getOrDefault(selectedItemId, 0);
-        ctx.drawCenteredTextWithShadow(textRenderer,
-                "§7Depoda: §a×" + depotCount, cx, y, C_SUBTEXT);
-        y += 12;
-
-        // Listing status
-        Optional<PlayerShopManager.ShopListing> listing = listings.stream()
-                .filter(l -> l.itemId().equals(selectedItemId))
-                .findFirst();
-        if (listing.isPresent()) {
-            PlayerShopManager.ShopListing cl = listing.get();
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                    "§a● Satışta: §6⬡" + formatPrice(cl.price()), cx, y, C_GREEN);
-            y += 11;
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                    "§8Kat: §7" + cl.category(), cx, y, C_SUBTEXT);
-        } else {
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                    "§c○ Satışta değil", cx, y, C_RED);
-        }
-
-        // Separator before controls
-        y += 14;
-        ctx.fill(detailX + 6, y, detailX + detailW - 6, y + 1, C_SEP);
+        // Title
+        title2x(ctx, "İlan Yönetimi", cx, y + (TITLE_H-16)/2, C_TITLE);
+        y += TITLE_H;
+        ctx.fill(rpX+8, y, rpX+rpW-8, y+1, C_SEP);
         y += 6;
 
-        // Price label
-        ctx.drawText(textRenderer, "§7Fiyat (⬡):", detailX + 6, y, C_SUBTEXT, false);
+        // ── Top: item detail ──────────────────────────────────────────────
+        if (selId != null) {
+            // Big icon
+            int imgX = cx - BIG_FRAME/2;
+            NineSliceRenderer.drawFullTexture(ctx, FRAME_TEX, imgX, y, BIG_FRAME, BIG_FRAME, 32, 32);
+            ItemStack stk = stack(selId);
+            if (!stk.isEmpty()) {
+                MatrixStack ms = ctx.getMatrices();
+                ms.push();
+                int margin = (BIG_FRAME - 16*BIG_ITEM) / 2;
+                ms.translate(imgX + margin, y + margin, 150);
+                ms.scale(BIG_ITEM, BIG_ITEM, BIG_ITEM);
+                ctx.drawItem(stk, 0, 0);
+                ms.pop();
+            }
+            y += BIG_FRAME + 8;
 
-        // Active listings — fill the gap between price-label and the button block
-        int pfY = detailY + detailH - 94; // mirrors init() button position
-        activeListStartY  = y + 14;
-        activeListBottomY = pfY - 4;
-        drawActiveListings(ctx, mouseX, mouseY, activeListStartY, activeListBottomY);
-    }
+            // Name
+            title15x(ctx, truncate(name(selId), rpW-20), cx, y, C_TITLE);
+            y += 14;
+            cText(ctx, "Depoda: ×" + available.getOrDefault(selId, 0), cx, y, C_LABEL);
+            y += 14;
 
-    /** Aktif satışlar — detail panelinin orta kısmı (bottomY'ye kadar) */
-    private void drawActiveListings(DrawContext ctx, int mouseX, int mouseY,
-                                    int startY, int bottomY) {
-        int lx = detailX + 2, lw = detailW - 4;
-        int listMaxH = bottomY - startY - 4;
-        if (listMaxH < 20) return;
+            // Status badge
+            boolean isListed = listings.stream().anyMatch(l -> l.itemId().equals(selId));
+            Optional<PlayerShopManager.ShopListing> opt = listings.stream()
+                    .filter(l -> l.itemId().equals(selId)).findFirst();
+            if (isListed) {
+                String lbl = "● Satışta: ⬡ " + opt.map(l -> price(l.price())).orElse("?");
+                int bw = textRenderer.getWidth(lbl) + 12;
+                ctx.fill(cx-bw/2, y-2, cx+bw/2, y+10, 0x33228822);
+                cText(ctx, lbl, cx, y, C_GREEN);
+            } else {
+                String lbl = "○ Satışta değil";
+                int bw = textRenderer.getWidth(lbl) + 12;
+                ctx.fill(cx-bw/2, y-2, cx+bw/2, y+10, 0x33882222);
+                cText(ctx, lbl, cx, y, C_RED);
+            }
+            y += 18;
 
-        ctx.fill(lx, startY - 2, lx + lw, startY - 1, C_SEP);
-        ctx.drawText(textRenderer,
-                "§7Aktif İlanlar §8(" + filteredListings.size() + ")",
-                lx + 3, startY + 1, C_SUBTEXT, false);
+            ctx.fill(rpX+16, y, rpX+rpW-16, y+1, C_SEP);
+            y += 6;
 
-        int rowH    = 16;
-        int listY   = startY + 12;
-        int listH   = bottomY - listY - 4;
-        int visRows = listH / rowH;
-        int maxScroll = Math.max(0, filteredListings.size() - visRows);
-        listScroll  = Math.max(0, Math.min(listScroll, maxScroll));
+            // Add listing button
+            int bX = rpX + 8, bW = rpW - 16, bH = 22;
+            boolean addHov = over(mx, my, bX, y, bW, bH);
+            ctx.fill(bX, y, bX+bW, y+bH, addHov ? 0xBB005520 : 0x88003318);
+            ctx.fill(bX+1, y,     bX+bW-1, y+1,    0xFF00AA55);
+            ctx.fill(bX+1, y+bH-1, bX+bW-1, y+bH, 0xFF001A0A);
+            ctx.fill(bX, y+1, bX+1, y+bH-1, 0xFF007740);
+            ctx.fill(bX+bW-1, y+1, bX+bW, y+bH-1, 0xFF007740);
+            String addLbl = isListed ? "✎  Fiyatı Güncelle" : "+ Yeni İlan Ekle";
+            title10x(ctx, addLbl, bX + bW/2, y + (bH-8)/2,
+                    addHov ? 0xFF80FF80 : 0xFF44CC77);
+            y += bH + 6;
 
-        ctx.fill(lx, listY, lx + lw, listY + listH, C_DARK);
-
-        for (int i = 0; i < visRows && i + listScroll < filteredListings.size(); i++) {
-            int idx = i + listScroll;
-            PlayerShopManager.ShopListing sl = filteredListings.get(idx);
-            int ry = listY + i * rowH;
-            boolean hov = mouseX >= lx && mouseX < lx + lw
-                    && mouseY >= ry && mouseY < ry + rowH;
-            boolean sel = idx == selectedListingIdx;
-
-            ctx.fill(lx, ry, lx + lw, ry + rowH - 1,
-                    sel ? C_SLOT_SEL : hov ? C_SLOT_HOVER : C_SLOT);
-
-            ItemStack s = getStack(sl.itemId());
-            if (!s.isEmpty()) ctx.drawItem(s, lx + 1, ry);
-
-            ctx.drawText(textRenderer, truncate(sl.displayName(), lw - 48),
-                    lx + 18, ry + 4, sel ? C_GOLD : C_TEXT, false);
-
-            String pr = "⬡" + formatPrice(sl.price());
-            ctx.drawText(textRenderer, pr,
-                    lx + lw - 2 - textRenderer.getWidth(pr), ry + 4, C_GOLD, false);
+            ctx.fill(rpX+8, y, rpX+rpW-8, y+1, C_SEP);
+            y += 5;
+        } else {
+            cText(ctx, "◄ Sol sayfadan item seçin", cx, y + 40, C_DIM);
+            y += 80;
+            ctx.fill(rpX+8, y, rpX+rpW-8, y+1, C_SEP);
+            y += 5;
         }
+
+        // ── Bottom: active listings ───────────────────────────────────────
+        // Header
+        String hdr = "Aktif İlanlar (" + (sorted == null ? 0 : sorted.size()) + ")";
+        ctx.drawText(textRenderer, hdr, rpX+8, y, C_DIM, false);
+        y += 12;
+
+        // Listings list
+        int remBtnH = 24;
+        int remBtnY = rpY + lpH - 30;
+        listStartY  = y;
+        listEndY    = remBtnY - 4;
+
+        if (sorted != null && !sorted.isEmpty()) {
+            int listH  = listEndY - listStartY;
+            int vrows  = Math.max(0, listH / ROW_H);
+            int maxSc  = Math.max(0, sorted.size() - vrows);
+            listScroll = Math.max(0, Math.min(listScroll, maxSc));
+
+            ctx.fill(rpX+4, listStartY, rpX+rpW-4, listStartY + vrows*ROW_H, 0x15000000);
+
+            for (int i = 0; i < vrows && i+listScroll < sorted.size(); i++) {
+                int idx = i + listScroll;
+                var sl  = sorted.get(idx);
+                int ry  = listStartY + i * ROW_H;
+                boolean hov = over(mx, my, rpX+4, ry, rpW-8, ROW_H);
+                boolean sel = (idx == selListing);
+
+                ctx.fill(rpX+4, ry, rpX+rpW-4, ry+ROW_H-1,
+                        sel ? 0x66FFCC00 : hov ? 0x33AA7700 : 0);
+
+                ItemStack stk = stack(sl.itemId());
+                if (!stk.isEmpty()) ctx.drawItem(stk, rpX+6, ry+(ROW_H-16)/2);
+
+                String nm = truncate(sl.displayName(), rpW-60);
+                ctx.drawText(textRenderer, nm, rpX+26, ry+(ROW_H-8)/2,
+                        sel ? C_GOLD : C_LABEL, false);
+
+                String pr = "⬡" + price(sl.price());
+                ctx.drawText(textRenderer, pr,
+                        rpX+rpW-textRenderer.getWidth(pr)-8, ry+(ROW_H-8)/2,
+                        C_GOLD, false);
+
+                ctx.fill(rpX+4, ry+ROW_H-1, rpX+rpW-4, ry+ROW_H, 0x22000000);
+            }
+
+            if (maxSc > 0) {
+                int sbX = rpX + rpW - 4;
+                int sbH = vrows * ROW_H;
+                int barH = Math.max(8, sbH * vrows / sorted.size());
+                int barY = listStartY + listScroll * (sbH - barH) / maxSc;
+                ctx.fill(sbX, listStartY, sbX+3, listStartY+sbH, 0x22000000);
+                ctx.fill(sbX, barY, sbX+3, barY+barH, 0xBB9B6200);
+            }
+        } else {
+            cText(ctx, "Aktif ilan yok", cx, listStartY + 14, C_DIM);
+        }
+
+        // Remove button
+        int bX = rpX + 8, bW = rpW - 16;
+        boolean remHov = over(mx, my, bX, remBtnY, bW, remBtnH);
+        ctx.fill(bX, remBtnY, bX+bW, remBtnY+remBtnH, remHov ? 0xBB551111 : 0x88331111);
+        ctx.fill(bX+1, remBtnY,          bX+bW-1, remBtnY+1,          0xFFCC3333);
+        ctx.fill(bX+1, remBtnY+remBtnH-1,bX+bW-1, remBtnY+remBtnH,    0xFF110000);
+        ctx.fill(bX, remBtnY+1, bX+1, remBtnY+remBtnH-1, 0xFFAA2222);
+        ctx.fill(bX+bW-1, remBtnY+1, bX+bW, remBtnY+remBtnH-1, 0xFFAA2222);
+        title10x(ctx, "− Seçili İlanı Kaldır", bX+bW/2, remBtnY+(remBtnH-8)/2,
+                remHov ? 0xFFFF9999 : 0xFFDD6666);
     }
 
-    // ── Mouse ────────────────────────────────────────────────────────────────
+    // ── Add listing popup ─────────────────────────────────────────────────
+    private void renderPopup(DrawContext ctx, int mx, int my) {
+        ctx.fill(0, 0, width, height, 0xAA000000);
+
+        // Layout constants — keep in sync with handlePopupClick
+        int popW = Math.min(sc(360), width - 40);
+        int hdrH = 32;
+        int m    = 14;
+        int fldW = popW - m*2;
+        int fldH = 14;
+        int btnH = 22;
+        int iconS = 24;
+        // Total content height: icon(28) + name(14) + sep(9) + lbl(12) + field(24) + sep(9) + btns(22) + pad(10) = 128
+        int popH = Math.max(hdrH + 138, sc(240));
+        int popX = (width  - popW) / 2;
+        int popY = (height - popH) / 2;
+        int cx   = popX + popW/2;
+
+        // Drop shadow
+        ctx.fill(popX+4, popY+4, popX+popW+4, popY+popH+4, 0x66000000);
+        // Golden border (double ring)
+        ctx.fill(popX-2, popY-2, popX+popW+2, popY+popH+2, 0xFF7A4A00);
+        ctx.fill(popX-1, popY-1, popX+popW+1, popY+popH+1, 0xFFD4A832);
+        // Body
+        ctx.fill(popX, popY, popX+popW, popY+popH, 0xFFF5EDDA);
+
+        // Header band
+        ctx.fill(popX, popY, popX+popW, popY+hdrH, 0xFF3D2200);
+        ctx.fill(popX, popY+hdrH, popX+popW, popY+hdrH+1, 0xFFD4A832);
+        title2x(ctx, "Satışa Ekle", cx, popY + (hdrH-16)/2, 0xFFEEDDAA);
+
+        int y = popY + hdrH + 10;
+
+        // Item icon
+        int iconX = cx - iconS/2;
+        NineSliceRenderer.drawFullTexture(ctx, FRAME_TEX, iconX, y, iconS, iconS, 32, 32);
+        if (selId != null) {
+            ItemStack stk = stack(selId);
+            if (!stk.isEmpty()) ctx.drawItem(stk, iconX + (iconS-16)/2, y + (iconS-16)/2);
+        }
+        y += iconS + 4;  // +28
+
+        // Item name (1.5×, no shadow)
+        String nm = selId != null ? truncate(name(selId), fldW) : "—";
+        title15x(ctx, nm, cx, y, C_TITLE);
+        y += 14;  // +14
+
+        // Separator
+        ctx.fill(popX+m, y, popX+m+fldW, y+1, C_SEP);
+        y += 8;   // +8 (sep is 1px visual, 8px spacing)
+
+        // Price label + field
+        ctx.drawText(textRenderer, "Fiyat (⬡):", popX+m, y, C_DIM, false);
+        y += 12;  // +12
+        renderField(ctx, mx, my, popX+m, y, fldW, fldH, popPrice, popPriceA, "örn: 250");
+        y += fldH + 10;  // +24
+
+        // Separator
+        ctx.fill(popX+m, y, popX+m+fldW, y+1, C_SEP);
+        y += 8;   // +8
+
+        // Buttons
+        int bW = (fldW - 8) / 2;
+        boolean cancelHov = over(mx, my, popX+m, y, bW, btnH);
+        drawBtn(ctx, popX+m, y, bW, btnH, "İptal",
+                cancelHov, 0xBB551111, 0xFFCC3333, 0xFFFF9999);
+        int ekleX = popX+m+bW+8;
+        boolean ekleHov = over(mx, my, ekleX, y, bW, btnH);
+        drawBtn(ctx, ekleX, y, bW, btnH, "✔  Ekle",
+                ekleHov, 0xBB005520, 0xFF00AA55, 0xFF80FF80);
+    }
+
+    private void drawBtn(DrawContext ctx, int x, int y, int w, int h,
+                         String lbl, boolean hov,
+                         int bg, int border, int tc) {
+        ctx.fill(x, y, x+w, y+h, hov ? bg | 0x33000000 : bg);
+        ctx.fill(x+1,   y,      x+w-1, y+1,    border);
+        ctx.fill(x+1,   y+h-1,  x+w-1, y+h,    (border >> 1) & 0x007F7F7F | 0xFF000000);
+        ctx.fill(x,     y+1,    x+1,   y+h-1,  border);
+        ctx.fill(x+w-1, y+1,    x+w,   y+h-1,  border);
+        ctx.drawText(textRenderer, lbl,
+                x + w/2 - textRenderer.getWidth(lbl)/2, y+(h-8)/2,
+                hov ? 0xFFFFFFFF : tc, false);
+    }
+
+    // ── Mouse ─────────────────────────────────────────────────────────────
     @Override
-    public boolean mouseClicked(double mx, double my, int button) {
-        // Category tabs
-        int tabH = 20;
-        for (int i = 0; i < CATEGORIES.length; i++) {
-            int ty = catY + i * (tabH + 2);
-            if (mx >= catX && mx < catX + catW && my >= ty && my < ty + tabH) {
-                if (selectedCatIdx != i) { selectedCatIdx = i; applyFilters(); }
+    public boolean mouseClicked(double mx, double my, int btn) {
+        if (popOpen) { handlePopupClick(mx, my); return true; }
+
+        // Search
+        int sfY = lpY + TITLE_H + 5 + TABS_H + 4 + 4 + 1 + 4;
+        if (over(mx, my, lpX+4, sfY, lpW-8, SF_H)) { sfActive = true; return true; }
+        sfActive = false;
+
+        // Tabs
+        int tabY = lpY + TITLE_H + 5;
+        int tabW = lpW / TABS.length;
+        for (int i = 0; i < TABS.length; i++) {
+            if (over(mx, my, lpX+i*tabW, tabY, tabW, TABS_H)) {
+                if (catIdx != i) { catIdx = i; filter(); }
                 return true;
             }
         }
 
         // Grid
-        int gx = gridX + 4, gy = gridY + 24, gw = gridW - 8, gh = gridH - 28;
-        int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
-        int visRows   = Math.max(1, gh / (SLOT_SIZE + SLOT_GAP));
-
-        for (int row = 0; row < visRows; row++) {
-            int absRow = row + gridScroll;
-            for (int col = 0; col < totalCols; col++) {
-                int idx = absRow * totalCols + col;
-                if (idx >= gridItems.size()) break;
-                int sx = gx + col * (SLOT_SIZE + SLOT_GAP);
-                int sy = gy + row * (SLOT_SIZE + SLOT_GAP);
-                if (mx >= sx && mx < sx + SLOT_SIZE && my >= sy && my < sy + SLOT_SIZE) {
-                    selectedItemId = gridItems.get(idx).getKey();
-                    priceField.setText("");
-                    // İlan varsa fiyat + kategori doldur
-                    Optional<PlayerShopManager.ShopListing> existing = listings.stream()
-                            .filter(l -> l.itemId().equals(selectedItemId))
-                            .findFirst();
-                    if (existing.isPresent()) {
-                        PlayerShopManager.ShopListing l = existing.get();
-                        priceField.setText(String.format("%.0f", l.price()));
-                        // Mevcut kategoriye göre index bul
-                        int foundIdx = -1;
-                        for (int ci = 0; ci < ITEM_CATEGORIES.length; ci++) {
-                            if (ITEM_CATEGORIES[ci].equals(l.category())) {
-                                foundIdx = ci; break;
-                            }
+        int gridY = sfY + SF_H + 4 + 3;
+        if (grid != null) {
+            int cols  = Math.max(1, lpW / PITCH);
+            int gH    = lpY + lpH - gridY;
+            int vrows = Math.max(1, gH / PITCH);
+            for (int r = 0; r < vrows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    int idx = (r + gridScroll) * cols + c;
+                    if (idx >= grid.size()) break;
+                    int sx = lpX + c * PITCH, sy = gridY + r * PITCH;
+                    if (over(mx, my, sx, sy, FRAME_S, FRAME_S)) {
+                        String id = grid.get(idx).getKey();
+                        if (!id.equals(selId)) {
+                            selId     = id;
+                            popCatIdx = catFor(id);
+                            popPrice  = "";
+                            listings.stream().filter(l -> l.itemId().equals(id)).findFirst()
+                                    .ifPresent(l -> popPrice = String.format("%.0f", l.price()));
                         }
-                        catListingIdx = foundIdx >= 0 ? foundIdx : ITEM_CATEGORIES.length - 1;
-                    } else {
-                        // İlan yoksa → otomatik kategori tespit et
-                        String auto = autoDetectCategory(selectedItemId);
-                        catListingIdx = ITEM_CATEGORIES.length - 1; // fallback: Misc
-                        for (int ci = 0; ci < ITEM_CATEGORIES.length; ci++) {
-                            if (ITEM_CATEGORIES[ci].equals(auto)) {
-                                catListingIdx = ci; break;
-                            }
-                        }
+                        return true;
                     }
-                    catListingButton.setMessage(Text.literal("§7Kat: §f" + ITEM_CATEGORIES[catListingIdx]));
+                }
+            }
+        }
+
+        // Right page — add button
+        if (selId != null) {
+            // Compute add button Y same as in renderRight
+            int y = rpY + TITLE_H + 6 + BIG_FRAME + 8 + 14 + 14 + 18 + 6;
+            if (over(mx, my, rpX+8, y, rpW-16, 22)) {
+                popOpen   = true;
+                popPriceA = false;
+                return true;
+            }
+        }
+
+        // Remove button
+        int remY = rpY + lpH - 30;
+        if (over(mx, my, rpX+8, remY, rpW-16, 24)) { doRemove(); return true; }
+
+        // Listing rows
+        if (sorted != null && listStartY < listEndY) {
+            int listH  = listEndY - listStartY;
+            int vrows  = Math.max(0, listH / ROW_H);
+            for (int i = 0; i < vrows && i+listScroll < sorted.size(); i++) {
+                int idx = i + listScroll;
+                int ry  = listStartY + i * ROW_H;
+                if (over(mx, my, rpX+4, ry, rpW-8, ROW_H)) {
+                    selListing = idx;
+                    var sl = sorted.get(idx);
+                    selId    = sl.itemId();
+                    popPrice = String.format("%.0f", sl.price());
+                    popCatIdx = catFor(sl.itemId());
                     return true;
                 }
             }
         }
 
-        // Active listing mini list
-        int lx = detailX + 2, lw = detailW - 4;
-        int startY = activeListStartY;
-        int listY  = startY + 12;
-        int listH  = activeListBottomY - listY - 4;
-        int rowH   = 16;
-        int visL   = listH / rowH;
-        for (int i = 0; i < visL && i + listScroll < filteredListings.size(); i++) {
-            int idx = i + listScroll;
-            int ry  = listY + i * rowH;
-            if (mx >= lx && mx < lx + lw && my >= ry && my < ry + rowH) {
-                selectedListingIdx = idx;
-                PlayerShopManager.ShopListing sl = filteredListings.get(idx);
-                selectedItemId = sl.itemId();
-                priceField.setText(String.format("%.0f", sl.price()));
-                // Kategoriyi de güncelle
-                int foundIdx = ITEM_CATEGORIES.length - 1;
-                for (int ci = 0; ci < ITEM_CATEGORIES.length; ci++) {
-                    if (ITEM_CATEGORIES[ci].equals(sl.category())) { foundIdx = ci; break; }
-                }
-                catListingIdx = foundIdx;
-                catListingButton.setMessage(Text.literal("§7Kat: §f" + ITEM_CATEGORIES[catListingIdx]));
+        return super.mouseClicked(mx, my, btn);
+    }
+
+    private void handlePopupClick(double mx, double my) {
+        // Must mirror renderPopup layout exactly
+        int popW = Math.min(sc(360), width - 40);
+        int hdrH = 32;
+        int m    = 14;
+        int fldW = popW - m*2;
+        int fldH = 14;
+        int btnH = 22;
+        int iconS = 24;
+        int popH = Math.max(hdrH + 138, sc(240));
+        int popX = (width  - popW) / 2;
+        int popY = (height - popH) / 2;
+
+        // y mirrors renderPopup: hdrH+10 → icon(+28) → name(+14) → sep(+8) = hdrH+60
+        int y = popY + hdrH + 10 + iconS + 4 + 14 + 8;
+        y += 12; // price label
+        // Price field
+        if (over(mx, my, popX+m, y, fldW, fldH)) { popPriceA = true; return; }
+        popPriceA = false;
+        y += fldH + 10 + 8; // field + sep
+        // Buttons
+        int bW = (fldW - 8) / 2;
+        if (over(mx, my, popX+m, y, bW, btnH))       { popOpen = false; return; }
+        if (over(mx, my, popX+m+bW+8, y, bW, btnH)) { doAdd();         return; }
+        // Outside click = close
+        if (!over(mx, my, popX, popY, popW, popH)) popOpen = false;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mx, double my, double amt) {
+        if (popOpen) return true;
+        int gridY = lpY + TITLE_H + 5 + TABS_H + 4 + 4 + 1 + 4 + SF_H + 4 + 3;
+        int gH    = lpY + lpH - gridY;
+        if (over(mx, my, lpX, gridY, lpW, gH) && grid != null) {
+            int cols  = Math.max(1, lpW / PITCH);
+            int vrows = Math.max(1, gH / PITCH);
+            int total = (grid.size() + cols - 1) / cols;
+            gridScroll = Math.max(0, Math.min(gridScroll-(int)amt, Math.max(0, total-vrows)));
+            return true;
+        }
+        if (sorted != null && listStartY < listEndY) {
+            int listH  = listEndY - listStartY;
+            int vrows  = Math.max(0, listH / ROW_H);
+            if (over(mx, my, rpX, listStartY, rpW, listH)) {
+                listScroll = Math.max(0, Math.min(listScroll-(int)amt,
+                        Math.max(0, sorted.size()-vrows)));
                 return true;
             }
         }
-
-        return super.mouseClicked(mx, my, button);
+        return super.mouseScrolled(mx, my, amt);
     }
 
     @Override
-    public boolean mouseScrolled(double mx, double my, double amount) {
-        int gx = gridX + 4, gy = gridY + 24, gw = gridW - 8, gh = gridH - 28;
-        if (mx >= gx && mx < gx + gw && my >= gy && my < gy + gh) {
-            int totalCols = Math.max(1, gw / (SLOT_SIZE + SLOT_GAP));
-            int totalRows = (gridItems.size() + totalCols - 1) / totalCols;
-            int visRows   = gh / (SLOT_SIZE + SLOT_GAP);
-            int maxScroll = Math.max(0, totalRows - visRows);
-            gridScroll    = Math.max(0, Math.min(gridScroll - (int) amount, maxScroll));
+    public boolean charTyped(char c, int mods) {
+        if (popOpen) {
+            if (popPriceA && (Character.isDigit(c) || (c=='.' && !popPrice.contains("."))))
+                popPrice += c;
             return true;
         }
-
-        int startY = activeListStartY;
-        int listY  = startY + 12;
-        int listH  = activeListBottomY - listY - 4;
-        if (mx >= detailX && mx < detailX + detailW && my >= listY && my < listY + listH) {
-            int rowH   = 16;
-            int visRows = listH / rowH;
-            int maxScroll = Math.max(0, filteredListings.size() - visRows);
-            listScroll = Math.max(0, Math.min(listScroll - (int) amount, maxScroll));
-            return true;
-        }
-
-        return super.mouseScrolled(mx, my, amount);
+        if (sfActive) { sfBuf += c; filter(); return true; }
+        return super.charTyped(c, mods);
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_ESCAPE) { close(); return true; }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+    public boolean keyPressed(int key, int scan, int mods) {
+        if (popOpen) {
+            if (key == GLFW.GLFW_KEY_ESCAPE) { popOpen = false; return true; }
+            if (popPriceA) {
+                if (key == GLFW.GLFW_KEY_BACKSPACE && !popPrice.isEmpty()) {
+                    popPrice = popPrice.substring(0, popPrice.length()-1); return true;
+                }
+                if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
+                    doAdd(); return true;
+                }
+            }
+            return true;
+        }
+        if (key == GLFW.GLFW_KEY_ESCAPE) {
+            if (sfActive) { sfActive = false; return true; }
+            close(); return true;
+        }
+        if (sfActive) {
+            if (key == GLFW.GLFW_KEY_BACKSPACE && !sfBuf.isEmpty()) {
+                sfBuf = sfBuf.substring(0, sfBuf.length()-1); filter(); return true;
+            }
+            if (key == GLFW.GLFW_KEY_ENTER || key == GLFW.GLFW_KEY_KP_ENTER) {
+                sfActive = false; return true;
+            }
+        }
+        return super.keyPressed(key, scan, mods);
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    // ── Draw helpers ──────────────────────────────────────────────────────
+    private void title2x(DrawContext ctx, String text, int cx, int y, int color) {
+        MatrixStack ms = ctx.getMatrices();
+        ms.push(); ms.translate(cx, y, 0); ms.scale(2f, 2f, 1f);
+        ctx.drawText(textRenderer, text, -textRenderer.getWidth(text)/2, 0, color, false);
+        ms.pop();
+    }
+    private void title15x(DrawContext ctx, String text, int cx, int y, int color) {
+        MatrixStack ms = ctx.getMatrices();
+        ms.push(); ms.translate(cx, y, 0); ms.scale(1.5f, 1.5f, 1f);
+        ctx.drawText(textRenderer, text, -textRenderer.getWidth(text)/2, 0, color, false);
+        ms.pop();
+    }
+    private void title10x(DrawContext ctx, String text, int cx, int y, int color) {
+        ctx.drawText(textRenderer, text, cx - textRenderer.getWidth(text)/2, y, color, false);
+    }
+
+    /** Centered text, no shadow. */
+    private void cText(DrawContext ctx, String t, int cx, int y, int c) {
+        ctx.drawText(textRenderer, t, cx - textRenderer.getWidth(t)/2, y, c, false);
+    }
+
+    private void renderField(DrawContext ctx, int mx, int my,
+                             int fx, int fy, int fw, int fh,
+                             String buf, boolean active, String hint) {
+        boolean hov = over(mx, my, fx, fy, fw, fh);
+        ctx.fill(fx, fy, fx+fw, fy+fh,
+                active ? 0x44BB9900 : hov ? 0x22AA7700 : 0x22000000);
+        int bc = active ? 0xFFBB9900 : 0x887A5B2A;
+        ctx.fill(fx,     fy,      fx+fw,    fy+1,   bc);
+        ctx.fill(fx,     fy+fh-1, fx+fw,    fy+fh,  bc);
+        ctx.fill(fx,     fy,      fx+1,     fy+fh,  bc);
+        ctx.fill(fx+fw-1,fy,      fx+fw,    fy+fh,  bc);
+        boolean empty = buf.isEmpty() && !active;
+        String vis = empty ? hint : buf;
+        int tc = empty ? 0xAA7A5B2A : 0xFF5A3F10;
+        int tx = fx+4, ty = fy+(fh-8)/2;
+        while (textRenderer.getWidth(vis) > fw-8 && !vis.isEmpty()) vis = vis.substring(1);
+        ctx.drawText(textRenderer, vis, tx, ty, tc, false);
+        if (active && (System.currentTimeMillis()/500)%2==0) {
+            int curX = tx + textRenderer.getWidth(vis);
+            ctx.fill(curX, ty-1, curX+1, ty+9, 0xFF7A5B2A);
+        }
+    }
+
+    private boolean over(double mx, double my, int x, int y, int w, int h) {
+        return mx >= x && mx < x+w && my >= y && my < y+h;
+    }
+
     private String truncate(String s, int maxPx) {
         if (textRenderer.getWidth(s) <= maxPx) return s;
-        while (!s.isEmpty() && textRenderer.getWidth(s + "…") > maxPx)
-            s = s.substring(0, s.length() - 1);
-        return s + "…";
+        while (!s.isEmpty() && textRenderer.getWidth(s+"…") > maxPx)
+            s = s.substring(0, s.length()-1);
+        return s+"…";
     }
 
-    private String formatPrice(double p) {
-        if (p >= 1_000_000) return String.format("%.1fM", p / 1_000_000);
-        if (p >= 1_000)     return String.format("%.1fK", p / 1_000);
+    private String price(double p) {
+        if (p >= 1_000_000) return String.format("%.1fM", p/1_000_000);
+        if (p >= 1_000)     return String.format("%.1fK", p/1_000);
         return String.format("%.0f", p);
     }
 
-    private ItemStack getStack(String itemId) {
+    private ItemStack stack(String id) {
         try {
-            Item item = Registries.ITEM.get(new Identifier(itemId));
-            return item == Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
+            Item it = Registries.ITEM.get(new Identifier(id));
+            return it == Items.AIR ? ItemStack.EMPTY : new ItemStack(it);
         } catch (Exception e) { return ItemStack.EMPTY; }
     }
 
-    private String getDisplayName(String itemId) {
+    private String name(String id) {
         try {
-            Item item = Registries.ITEM.get(new Identifier(itemId));
-            if (item == Items.AIR) return itemId;
-            String n = item.getDefaultStack().getName().getString();
-            return n.isBlank() ? itemId : n;
-        } catch (Exception e) { return itemId; }
+            Item it = Registries.ITEM.get(new Identifier(id));
+            if (it == Items.AIR) return id;
+            String n = it.getDefaultStack().getName().getString();
+            return n.isBlank() ? id : n;
+        } catch (Exception e) { return id; }
     }
 
-    /**
-     * Item sınıfı ve ID'sine göre otomatik kategori tespit eder.
-     * Aşağıdaki öncelik sırasıyla çalışır:
-     *  1. Food component → Yiyecek
-     *  2. ArmorItem / ToolItem / SwordItem / RangedWeaponItem → Araç/Ekipman
-     *  3. Redstone bileşeni (ID içeriğine göre) → Redstone
-     *  4. Kitap / enchantment → Enchant/Kitap
-     *  5. Tohum / fidan / bitki → Ekim
-     *  6. Mob drop / yaratık → Yaratık
-     *  7. BlockItem → Blok
-     *  8. Hammadde keywords (ore, ingot, log, …)
-     *  9. Misc
-     */
-    private String autoDetectCategory(String itemId) {
+    private int catFor(String itemId) {
         try {
-            Item item = Registries.ITEM.get(new Identifier(itemId));
-            if (item == Items.AIR) return "Misc";
-
-            // 1. Food
-            if (item.getFoodComponent() != null) return "Yiyecek";
-
-            // 2. Equipment
-            if (item instanceof net.minecraft.item.ArmorItem
-                    || item instanceof net.minecraft.item.ToolItem
-                    || item instanceof net.minecraft.item.SwordItem
-                    || item instanceof net.minecraft.item.RangedWeaponItem
-                    || item instanceof net.minecraft.item.FishingRodItem
-                    || item instanceof net.minecraft.item.ShieldItem
-                    || item instanceof net.minecraft.item.TridentItem) {
-                return "Araç/Ekipman";
+            Item it = Registries.ITEM.get(new Identifier(itemId));
+            if (it != Items.AIR) {
+                if (it.getFoodComponent() != null) return idx("Yiyecek");
+                if (it instanceof net.minecraft.item.ArmorItem ||
+                    it instanceof net.minecraft.item.ToolItem  ||
+                    it instanceof net.minecraft.item.SwordItem ||
+                    it instanceof net.minecraft.item.RangedWeaponItem ||
+                    it instanceof net.minecraft.item.ShieldItem ||
+                    it instanceof net.minecraft.item.TridentItem)
+                    return idx("Araç/Ekipman");
             }
-
-            String id = itemId.replace("minecraft:", "").toLowerCase(Locale.ROOT);
-
-            // 3. Redstone
-            if (id.contains("redstone") || id.contains("piston") || id.contains("repeater")
-                    || id.contains("comparator") || id.contains("observer") || id.contains("hopper")
-                    || id.contains("dropper") || id.contains("dispenser") || id.contains("lever")
-                    || id.contains("button") || id.contains("pressure_plate") || id.contains("daylight")
-                    || id.contains("target") || id.contains("rail") || id.contains("tripwire")
-                    || id.contains("detector") || id.contains("powered")) {
-                return "Redstone";
-            }
-
-            // 4. Enchant / Book
-            if (id.contains("enchanted_book") || id.contains("book") || id.contains("knowledge_book")
-                    || id.contains("written_book") || id.contains("writable_book")) {
-                return "Enchant/Kitap";
-            }
-
-            // 5. Seeds / Saplings / Plants
-            if (id.endsWith("_seeds") || id.endsWith("_seed") || id.endsWith("_sapling")
-                    || id.contains("flower") || id.contains("mushroom") || id.endsWith("_plant")
-                    || id.endsWith("_sprout") || id.contains("fern") || id.contains("grass")
-                    || id.contains("vine") || id.contains("lily") || id.contains("azalea")
-                    || id.equals("wheat") || id.equals("carrot") || id.equals("potato")
-                    || id.equals("beetroot") || id.equals("nether_wart")
-                    || id.equals("cocoa_beans") || id.equals("sweet_berries")
-                    || id.equals("glow_berries") || id.equals("melon_slice")) {
-                return "Ekim";
-            }
-
-            // 6. Mob drops / creature items
-            if (id.contains("bone") || id.contains("feather") || id.contains("leather")
-                    || id.contains("spider_eye") || id.contains("ender_pearl") || id.contains("ender_eye")
-                    || id.contains("blaze") || id.contains("ghast") || id.contains("slime")
-                    || id.contains("magma_cream") || id.contains("gunpowder") || id.contains("string")
-                    || id.contains("rotten_flesh") || id.contains("prismarine_crystal")
-                    || id.contains("prismarine_shard") || id.contains("rabbit")
-                    || id.contains("mutton") || id.contains("beef") || id.contains("pork")
-                    || id.contains("chicken") || id.contains("cod") || id.contains("salmon")
-                    || id.contains("tropical_fish") || id.contains("pufferfish")
-                    || id.contains("ink_sac") || id.contains("scute") || id.contains("phantom")
-                    || id.endsWith("_spawn_egg") || id.contains("dragon_breath")
-                    || id.contains("shulker_shell") || id.contains("totem")) {
-                return "Yaratık";
-            }
-
-            // 7. Block items → Blok
-            if (item instanceof net.minecraft.item.BlockItem) return "Blok";
-
-            // 8. Raw materials / ores / ingots / logs
-            if (id.endsWith("_ingot") || id.endsWith("_nugget") || id.endsWith("_gem")
-                    || id.contains("_ore") || id.startsWith("raw_")
-                    || id.endsWith("_log") || id.endsWith("_wood") || id.endsWith("_plank")
-                    || id.endsWith("_stick") || id.endsWith("_slab") || id.contains("crystal")
-                    || id.endsWith("_dust") || id.endsWith("_shard") || id.equals("flint")
-                    || id.equals("clay") || id.equals("clay_ball") || id.contains("wool")
-                    || id.contains("sand") || id.contains("gravel") || id.contains("quartz")) {
-                return "Hammadde";
-            }
-
-            return "Misc";
-
-        } catch (Exception e) {
-            return "Misc";
-        }
+        } catch (Exception ignored) {}
+        String id = itemId.replace("minecraft:", "").toLowerCase(Locale.ROOT);
+        if (id.contains("redstone")||id.contains("piston")||id.contains("repeater")||
+            id.contains("comparator")||id.contains("observer")||id.contains("hopper")||
+            id.contains("dropper")||id.contains("dispenser")||id.contains("rail"))
+            return idx("Redstone");
+        if (id.contains("enchanted_book")||id.contains("_book")) return idx("Enchant/Kitap");
+        if (id.endsWith("_seeds")||id.endsWith("_sapling")||id.contains("flower")||
+            id.equals("wheat")||id.equals("carrot")||id.equals("potato")||
+            id.equals("beetroot")||id.equals("nether_wart"))
+            return idx("Ekim");
+        if (id.contains("bone")||id.contains("feather")||id.contains("leather")||
+            id.contains("ender_pearl")||id.contains("blaze")||id.contains("ghast")||
+            id.contains("slime")||id.contains("gunpowder")||id.endsWith("_spawn_egg"))
+            return idx("Yaratık");
+        if (id.endsWith("_ingot")||id.endsWith("_nugget")||id.contains("_ore")||
+            id.startsWith("raw_"))
+            return idx("Hammadde");
+        try {
+            Item it = Registries.ITEM.get(new Identifier(itemId));
+            if (it instanceof net.minecraft.item.BlockItem) return idx("Blok");
+        } catch (Exception ignored) {}
+        return idx("Misc");
     }
 
-    @Override
-    public boolean shouldPause() { return false; }
+    private int idx(String cat) {
+        for (int i = 0; i < ITEM_CATS.length; i++) if (ITEM_CATS[i].equals(cat)) return i;
+        return ITEM_CATS.length - 1;
+    }
+
+    @Override public boolean shouldPause() { return false; }
 }

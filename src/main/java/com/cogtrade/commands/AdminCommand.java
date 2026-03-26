@@ -141,6 +141,16 @@ public class AdminCommand {
                             })
                         )
                     )
+
+                    // /ctadmin market reseed
+                    .then(CommandManager.literal("reseed")
+                        .executes(ctx -> {
+                            ctx.getSource().sendFeedback(() -> Text.literal("§ePazar sıfırlanıyor..."), false);
+                            com.cogtrade.market.MarketManager.reseedMarket();
+                            ctx.getSource().sendFeedback(() -> Text.literal("§a✓ Pazar tüm varsayılan itemlerle yeniden oluşturuldu."), false);
+                            return 1;
+                        })
+                    )
                 )
 
                 // ── balance ─────────────────────────────────────────────────

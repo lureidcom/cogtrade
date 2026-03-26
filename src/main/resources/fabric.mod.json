@@ -3,7 +3,7 @@
 	"id": "cogtrade",
 	"version": "${version}",
 	"name": "CogTrade",
-	"description": "⚠ ALPHA v1.1.0 — Oyuncu odaklı ekonomi sistemi. Yenilikler: Doğrudan oyuncular arası takas (Direct Trade) sistemi, gelişmiş GUI, partial stack desteği, güvenli item iade mekanizması. | Player-driven economy mod with direct player trading, Trade Depot, Trade Post, and server market. ALPHA — experimental features, backup recommended.",
+	"description": "⚠ ALPHA v1.2.0 — Oyuncu odaklı ekonomi sistemi. Yenilikler: Book GUI (kitap temalı unified arayüz), oyuncu-oyuncu BookTrade sistemi, 100+ item fiyat tablosu, tam GUI yenileme. | Player-driven economy mod with Book GUI, BookTrade system, market price table, and fully polished Trade Depot/Post screens. ALPHA — backup recommended.",
 	"authors": [
 		"Kernel Dev"
 	],
